@@ -147,7 +147,7 @@ fn render_bookmarks(frame: &mut Frame<'_>, app: &App, layout: ViewLayout) {
         .skip(offset)
         .take(rows)
         .map(|bookmark| {
-            let invalid = if bookmark.path_exists {
+            let invalid = if bookmark.valid_target {
                 String::new()
             } else {
                 " [失效]".to_owned()
@@ -232,12 +232,22 @@ mod tests {
     }
 
     #[test]
+    fn regular_file_is_visibly_marked_invalid() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let database = database_with_bookmark("regular-file", file.path().to_path_buf());
+        let mut app = App::from_database_at(database, test_now());
+        let buffer = render_to_string(&mut app, 80, 16);
+        assert!(buffer.contains("失效"), "{buffer}");
+        assert!(buffer.contains("regular-file"), "{buffer}");
+    }
+
+    #[test]
     fn status_message_is_rendered_in_the_footer() {
         let database = database_with_bookmark("missing", PathBuf::from("missing-directory"));
         let mut app = App::from_database_at(database, test_now());
         app.handle(Action::Confirm, test_now());
         let buffer = render_to_string(&mut app, 80, 16);
-        assert!(buffer.contains("目录不存在"), "{buffer}");
+        assert!(buffer.contains("目录不存在或不是目录"), "{buffer}");
     }
 
     #[test]

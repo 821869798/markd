@@ -1,7 +1,8 @@
-use std::io::{self, Stderr};
+use std::io::{self, Stderr, Write};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use crossterm::cursor::Show;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -126,31 +127,111 @@ fn row_in(area: ratatui::layout::Rect, column: u16, row: u16) -> Option<usize> {
         .then(|| usize::from(row - area.y))
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct CleanupState {
+    raw_mode: bool,
+    alternate_screen: bool,
+    mouse_capture: bool,
+    show_cursor: bool,
+}
+
+trait CleanupOperations {
+    fn disable_mouse_capture(&mut self) -> io::Result<()>;
+    fn leave_alternate_screen(&mut self) -> io::Result<()>;
+    fn show_cursor(&mut self) -> io::Result<()>;
+    fn disable_raw_mode(&mut self) -> io::Result<()>;
+}
+
+fn cleanup_best_effort(
+    operations: &mut impl CleanupOperations,
+    state: CleanupState,
+) -> io::Result<()> {
+    let mut first_error = None;
+    if state.mouse_capture {
+        preserve_first_error(&mut first_error, operations.disable_mouse_capture());
+    }
+    if state.alternate_screen {
+        preserve_first_error(&mut first_error, operations.leave_alternate_screen());
+    }
+    if state.show_cursor {
+        preserve_first_error(&mut first_error, operations.show_cursor());
+    }
+    if state.raw_mode {
+        preserve_first_error(&mut first_error, operations.disable_raw_mode());
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn preserve_first_error(first_error: &mut Option<io::Error>, result: io::Result<()>) {
+    if let Err(error) = result
+        && first_error.is_none()
+    {
+        *first_error = Some(error);
+    }
+}
+
+struct CrosstermCleanup<'a, W> {
+    writer: &'a mut W,
+}
+
+impl<W: Write> CleanupOperations for CrosstermCleanup<'_, W> {
+    fn disable_mouse_capture(&mut self) -> io::Result<()> {
+        execute!(self.writer, DisableMouseCapture)
+    }
+
+    fn leave_alternate_screen(&mut self) -> io::Result<()> {
+        execute!(self.writer, LeaveAlternateScreen)
+    }
+
+    fn show_cursor(&mut self) -> io::Result<()> {
+        execute!(self.writer, Show)
+    }
+
+    fn disable_raw_mode(&mut self) -> io::Result<()> {
+        disable_raw_mode()
+    }
+}
+
+fn cleanup_writer(writer: &mut impl Write, state: CleanupState) -> io::Result<()> {
+    cleanup_best_effort(&mut CrosstermCleanup { writer }, state)
+}
+
 type StderrTerminal = Terminal<CrosstermBackend<Stderr>>;
 
 struct TerminalGuard {
     terminal: StderrTerminal,
+    cleanup_state: CleanupState,
     restored: bool,
 }
 
 impl TerminalGuard {
     fn enter() -> io::Result<Self> {
+        let mut cleanup_state = CleanupState::default();
         enable_raw_mode()?;
+        cleanup_state.raw_mode = true;
+
         let mut stderr = io::stderr();
-        if let Err(error) = execute!(stderr, EnterAlternateScreen, EnableMouseCapture) {
-            let _ = execute!(io::stderr(), LeaveAlternateScreen, DisableMouseCapture);
-            let _ = disable_raw_mode();
+        cleanup_state.alternate_screen = true;
+        if let Err(error) = execute!(stderr, EnterAlternateScreen) {
+            let _ = cleanup_writer(&mut stderr, cleanup_state);
             return Err(error);
         }
 
+        cleanup_state.mouse_capture = true;
+        if let Err(error) = execute!(stderr, EnableMouseCapture) {
+            let _ = cleanup_writer(&mut stderr, cleanup_state);
+            return Err(error);
+        }
+
+        cleanup_state.show_cursor = true;
         match Terminal::new(CrosstermBackend::new(stderr)) {
             Ok(terminal) => Ok(Self {
                 terminal,
+                cleanup_state,
                 restored: false,
             }),
             Err(error) => {
-                let _ = execute!(io::stderr(), LeaveAlternateScreen, DisableMouseCapture);
-                let _ = disable_raw_mode();
+                let _ = cleanup_writer(&mut io::stderr(), cleanup_state);
                 Err(error)
             }
         }
@@ -164,15 +245,9 @@ impl TerminalGuard {
         if self.restored {
             return Ok(());
         }
-        let cursor_result = self.terminal.show_cursor();
-        let screen_result = execute!(
-            self.terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        );
-        let raw_result = disable_raw_mode();
         self.restored = true;
-        cursor_result.and(screen_result).and(raw_result)
+        let cleanup_state = std::mem::take(&mut self.cleanup_state);
+        cleanup_writer(self.terminal.backend_mut(), cleanup_state)
     }
 }
 
@@ -184,7 +259,9 @@ impl Drop for TerminalGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_key_event, mouse_action};
+    use super::{
+        CleanupOperations, CleanupState, cleanup_best_effort, map_key_event, mouse_action,
+    };
     use crate::model::{Bookmark, Database};
     use crate::ui::app::{Action, App, ClickButton};
     use crate::ui::view::layout_for;
@@ -193,9 +270,29 @@ mod tests {
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
     use ratatui::layout::Rect;
+    use std::io;
     use std::path::PathBuf;
     use std::time::Duration;
     use uuid::Uuid;
+
+    #[test]
+    fn cleanup_continues_after_failures_and_preserves_the_first_error() {
+        let mut operations = FakeCleanup::failing(&["mouse", "cursor"]);
+
+        let error = cleanup_best_effort(
+            &mut operations,
+            CleanupState {
+                raw_mode: true,
+                alternate_screen: true,
+                mouse_capture: true,
+                show_cursor: true,
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(operations.calls, ["mouse", "alternate", "cursor", "raw"]);
+        assert_eq!(error.to_string(), "mouse failed");
+    }
 
     #[test]
     fn keyboard_mapping_covers_navigation_selection_and_search_modes() {
@@ -299,6 +396,48 @@ mod tests {
             ),
             Some(Action::ClickCategory { row: 3 })
         );
+    }
+
+    #[derive(Default)]
+    struct FakeCleanup {
+        calls: Vec<&'static str>,
+        failures: Vec<&'static str>,
+    }
+
+    impl FakeCleanup {
+        fn failing(failures: &[&'static str]) -> Self {
+            Self {
+                calls: Vec::new(),
+                failures: failures.to_vec(),
+            }
+        }
+
+        fn perform(&mut self, operation: &'static str) -> io::Result<()> {
+            self.calls.push(operation);
+            if self.failures.contains(&operation) {
+                Err(io::Error::other(format!("{operation} failed")))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl CleanupOperations for FakeCleanup {
+        fn disable_mouse_capture(&mut self) -> io::Result<()> {
+            self.perform("mouse")
+        }
+
+        fn leave_alternate_screen(&mut self) -> io::Result<()> {
+            self.perform("alternate")
+        }
+
+        fn show_cursor(&mut self) -> io::Result<()> {
+            self.perform("cursor")
+        }
+
+        fn disable_raw_mode(&mut self) -> io::Result<()> {
+            self.perform("raw")
+        }
     }
 
     fn key(code: KeyCode, searching: bool) -> Option<Action> {

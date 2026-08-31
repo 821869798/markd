@@ -55,7 +55,7 @@ pub struct BookmarkRow {
     pub name: String,
     pub path: PathBuf,
     pub category: String,
-    pub path_exists: bool,
+    pub valid_target: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -285,7 +285,7 @@ impl App {
         };
 
         if !row.path.is_dir() {
-            self.status_message = Some(format!("目录不存在：{}", row.path.display()));
+            self.status_message = Some(format!("目录不存在或不是目录：{}", row.path.display()));
             return Outcome::Continue;
         }
 
@@ -351,7 +351,7 @@ impl App {
             name: result.bookmark.name.clone(),
             path: result.bookmark.path.clone(),
             category: result.bookmark.category.clone(),
-            path_exists: result.path_exists,
+            valid_target: result.bookmark.path.is_dir(),
         })
         .collect();
 
@@ -426,7 +426,27 @@ mod tests {
         assert_eq!(app.handle(Action::Confirm, test_now()), Outcome::Continue);
         assert!(
             app.status_message()
-                .is_some_and(|message| message.contains("不存在"))
+                .is_some_and(|message| message.contains("目录不存在或不是目录"))
+        );
+    }
+
+    #[test]
+    fn confirm_rejects_regular_file_and_row_marks_it_as_invalid_target() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut app = App::from_database_at(
+            database_with(vec![bookmark(
+                "regular-file",
+                file.path().to_path_buf(),
+                "default",
+            )]),
+            test_now(),
+        );
+
+        assert!(!app.visible_bookmarks()[0].valid_target);
+        assert_eq!(app.handle(Action::Confirm, test_now()), Outcome::Continue);
+        assert!(
+            app.status_message()
+                .is_some_and(|message| message.contains("目录不存在或不是目录"))
         );
     }
 
@@ -494,6 +514,13 @@ mod tests {
         app.handle(Action::Input('e'), test_now());
         assert_eq!(app.search_text(), "be");
         assert_eq!(app.visible_bookmarks()[0].name, "beta");
+        app.handle(Action::Backspace, test_now());
+        assert_eq!(app.search_text(), "b");
+        app.handle(Action::Input('中'), test_now());
+        app.handle(Action::Input('🙂'), test_now());
+        assert_eq!(app.search_text(), "b中🙂");
+        app.handle(Action::Backspace, test_now());
+        assert_eq!(app.search_text(), "b中");
         app.handle(Action::Backspace, test_now());
         assert_eq!(app.search_text(), "b");
         assert_eq!(app.handle(Action::Cancel, test_now()), Outcome::Continue);
