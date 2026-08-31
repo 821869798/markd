@@ -259,12 +259,18 @@ struct PersistentUi<'a> {
 impl UiRunner for PersistentUi<'_> {
     fn run(&mut self, database: crate::model::Database) -> Result<Outcome, UiError> {
         ui::run_with(database, |mutation| {
-            let mut latest = self.store.load().map_err(|error| error.to_string())?;
-            mutation.apply(&mut latest)?;
+            let latest = self
+                .store
+                .load()
+                .map_err(|error| ui::MutationPersistenceError::Storage(error.to_string()))?;
+            let mut updated = latest.clone();
+            if let Err(error) = mutation.apply(&mut updated) {
+                return Err(ui::MutationPersistenceError::Conflict { latest, error });
+            }
             self.store
-                .save(&latest)
-                .map_err(|error| error.to_string())?;
-            Ok(latest)
+                .save(&updated)
+                .map_err(|error| ui::MutationPersistenceError::Storage(error.to_string()))?;
+            Ok(updated)
         })
     }
 }
@@ -300,6 +306,7 @@ pub fn run_select_with<U: UiRunner>(
             bookmark.path.display()
         )
     })?;
+    paths::validate_path(&path)?;
     latest.record_visit(id, now)?;
     store.save(&latest)?;
     Ok(format!("{}\n", path.display()))

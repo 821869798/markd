@@ -34,10 +34,16 @@ pub trait UiRunner {
     fn run(&mut self, database: Database) -> Result<Outcome, UiError>;
 }
 
+#[derive(Debug)]
+pub(crate) enum MutationPersistenceError {
+    Conflict { latest: Database, error: String },
+    Storage(String),
+}
+
 /// Runs the selector with a callback used to persist management changes.
 pub(crate) fn run_with<F>(database: Database, mut persist: F) -> Result<Outcome, UiError>
 where
-    F: FnMut(&app::Mutation) -> Result<Database, String>,
+    F: FnMut(&app::Mutation) -> Result<Database, MutationPersistenceError>,
 {
     let mut terminal = TerminalGuard::enter()?;
     let mut app = App::from_database_at(database, Utc::now());
@@ -63,10 +69,7 @@ where
             match app.handle(action, Utc::now()) {
                 Outcome::Continue => {
                     if let Some(mutation) = app.take_mutation() {
-                        match persist(&mutation) {
-                            Ok(updated) => app.replace_database(updated, Utc::now()),
-                            Err(error) => app.restore_snapshot(before, error),
-                        }
+                        reconcile_persistence(&mut app, before, persist(&mutation), Utc::now());
                     }
                 }
                 finished => break finished,
@@ -82,21 +85,47 @@ where
 pub fn run(database: Database) -> Result<Outcome, UiError> {
     let mut current = database.clone();
     run_with(database, |mutation| {
-        mutation.apply(&mut current)?;
+        let mut updated = current.clone();
+        if let Err(error) = mutation.apply(&mut updated) {
+            return Err(MutationPersistenceError::Conflict {
+                latest: current.clone(),
+                error,
+            });
+        }
+        current = updated;
         Ok(current.clone())
     })
 }
 
-fn key_action(event: KeyEvent, app: &App) -> Option<Action> {
-    if !matches!(event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
-        return None;
+fn reconcile_persistence(
+    app: &mut App,
+    before: App,
+    result: Result<Database, MutationPersistenceError>,
+    now: chrono::DateTime<Utc>,
+) {
+    match result {
+        Ok(updated) => app.replace_database(updated, now),
+        Err(MutationPersistenceError::Conflict { latest, error }) => {
+            app.replace_database_with_error(latest, now, error);
+        }
+        Err(MutationPersistenceError::Storage(error)) => app.restore_snapshot(before, error),
     }
+}
+
+fn key_action(event: KeyEvent, app: &App) -> Option<Action> {
     if app.is_confirming_delete() {
+        let plain_or_shift = event.modifiers.is_empty() || event.modifiers == KeyModifiers::SHIFT;
+        if event.kind != KeyEventKind::Press || !plain_or_shift {
+            return None;
+        }
         return match event.code {
             KeyCode::Esc => Some(Action::Cancel),
             KeyCode::Char(character) => app.pending_delete_key(character),
             _ => None,
         };
+    }
+    if !matches!(event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return None;
     }
     if app.is_editing() {
         return match event.code {
@@ -110,9 +139,6 @@ fn key_action(event: KeyEvent, app: &App) -> Option<Action> {
             }
             _ => None,
         };
-    }
-    if app.is_confirming_delete() && matches!(event.code, KeyCode::Char('d')) {
-        return Some(Action::ConfirmDelete(true));
     }
     map_key_event(event, app.is_searching())
 }
@@ -325,14 +351,15 @@ impl Drop for TerminalGuard {
 #[cfg(test)]
 mod tests {
     use super::{
-        CleanupOperations, CleanupState, cleanup_best_effort, map_key_event, mouse_action,
+        CleanupOperations, CleanupState, MutationPersistenceError, cleanup_best_effort,
+        map_key_event, mouse_action, reconcile_persistence,
     };
     use crate::model::{Bookmark, Database};
     use crate::ui::app::{Action, App, ClickButton};
     use crate::ui::view::layout_for;
     use chrono::{TimeZone, Utc};
     use crossterm::event::{
-        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
     use ratatui::layout::Rect;
     use std::io;
@@ -390,6 +417,83 @@ mod tests {
         assert_eq!(
             super::key_action(key_event(KeyCode::Char('D')), &app),
             Some(Action::ConfirmDelete(true))
+        );
+    }
+    #[test]
+    fn pending_delete_rejects_repeat_and_modified_confirmation_keys() {
+        let mut app = fixture_app(1);
+        app.handle(Action::DeleteSelected, test_now());
+
+        assert_eq!(
+            super::key_action(
+                KeyEvent::new_with_kind(
+                    KeyCode::Char('d'),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Repeat,
+                ),
+                &app,
+            ),
+            None
+        );
+        assert_eq!(
+            super::key_action(
+                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+                &app,
+            ),
+            None
+        );
+        assert_eq!(
+            super::key_action(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::SHIFT), &app,),
+            Some(Action::ConfirmDelete(true))
+        );
+    }
+
+    #[test]
+    fn conflict_reloads_latest_database_and_shows_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let old = Bookmark {
+            id: Uuid::new_v4(),
+            name: "old".into(),
+            path: temp.path().join("old"),
+            category: "category-0".into(),
+            created_at: test_now(),
+            last_visited_at: None,
+            visit_count: 0,
+        };
+        let old_id = old.id;
+        let mut latest = Database {
+            version: 1,
+            categories: vec!["default".into(), "category-0".into()],
+            bookmarks: vec![old],
+        };
+        latest.bookmarks[0].name = "changed externally".into();
+        let app_database = Database {
+            version: 1,
+            categories: latest.categories.clone(),
+            bookmarks: vec![Bookmark {
+                id: old_id,
+                name: "old".into(),
+                path: temp.path().join("old"),
+                category: "category-0".into(),
+                created_at: test_now(),
+                last_visited_at: None,
+                visit_count: 0,
+            }],
+        };
+        let mut app = App::from_database_at(app_database, test_now());
+        let before = app.snapshot();
+        app.handle(Action::BeginRename, test_now());
+        app.handle(Action::CommitRename("new".into()), test_now());
+        let error = MutationPersistenceError::Conflict {
+            latest: latest.clone(),
+            error: "bookmark was changed externally".into(),
+        };
+        reconcile_persistence(&mut app, before, Err(error), test_now());
+
+        assert_eq!(app.database_snapshot(), latest);
+        assert_eq!(
+            app.status_message(),
+            Some("bookmark was changed externally")
         );
     }
     #[test]

@@ -208,6 +208,30 @@ fn final_selection_rejects_newline_path_from_hand_edited_database() {
     assert_eq!(store.load().unwrap().bookmarks[0].visit_count, 0);
 }
 
+#[cfg(unix)]
+#[test]
+fn final_selection_rejects_symlink_to_newline_path() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    let store = mkd_store(temp.path());
+    let target = temp.path().join("target\nwith-newline");
+    let link = temp.path().join("safe-link");
+    fs::create_dir(&target).unwrap();
+    symlink(&target, &link).unwrap();
+
+    let mut database = Database::default();
+    database
+        .add_bookmark(link, Some("repo".into()), None)
+        .unwrap();
+    let id = database.bookmarks[0].id;
+    store.save(&database).unwrap();
+
+    let error = run_select_with(&store, FakeUi(Some(id)), chrono::Utc::now()).unwrap_err();
+    assert!(error.to_string().contains("unsupported newline"));
+    assert_eq!(store.load().unwrap().bookmarks[0].visit_count, 0);
+}
+
 #[test]
 fn rename_and_remove_bookmark() {
     let temp = tempfile::tempdir().unwrap();

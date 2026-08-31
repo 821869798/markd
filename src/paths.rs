@@ -30,19 +30,29 @@ pub fn normalize_directory(input: &Path) -> Result<PathBuf, PathError> {
 }
 
 pub fn normalize_directory_from(input: &Path, base: &Path) -> Result<PathBuf, PathError> {
+    normalize_directory_from_with_home(input, base, dirs_home())
+}
+
+fn normalize_directory_from_with_home(
+    input: &Path,
+    base: &Path,
+    home: Option<PathBuf>,
+) -> Result<PathBuf, PathError> {
     validate_path(input)?;
-    let expanded = expand_home(input)?;
+    let expanded = expand_home_from(input, home)?;
     let candidate = if expanded.is_absolute() {
         expanded
     } else {
         base.join(expanded)
     };
+    validate_path(&candidate)?;
     let canonical = candidate
         .canonicalize()
         .map_err(|source| PathError::Canonicalize {
             path: candidate,
             source,
         })?;
+    validate_path(&canonical)?;
     if !canonical.is_dir() {
         return Err(PathError::NotDirectory(canonical));
     }
@@ -61,7 +71,7 @@ pub fn default_data_file() -> Result<PathBuf, PathError> {
     Ok(project_dirs.data_local_dir().join("bookmarks.json"))
 }
 
-fn expand_home(input: &Path) -> Result<PathBuf, PathError> {
+fn expand_home_from(input: &Path, home: Option<PathBuf>) -> Result<PathBuf, PathError> {
     let mut components = input.components();
     let first = components.next();
     let is_tilde = matches!(first, Some(std::path::Component::Normal(value)) if value == "~");
@@ -69,7 +79,7 @@ fn expand_home(input: &Path) -> Result<PathBuf, PathError> {
         return Ok(input.to_path_buf());
     }
 
-    let home = dirs_home().ok_or(PathError::HomeDirectoryUnavailable)?;
+    let home = home.ok_or(PathError::HomeDirectoryUnavailable)?;
     let mut expanded = home;
     expanded.extend(components);
     Ok(expanded)
@@ -115,5 +125,38 @@ mod tests {
         let error =
             super::normalize_directory_from(Path::new("safe\nname"), temp.path()).unwrap_err();
         assert!(matches!(error, super::PathError::UnsafeCharacters(_)));
+    }
+
+    #[test]
+    fn expanded_home_and_joined_base_paths_are_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_with_newline = temp.path().join("cwd\nwith-newline");
+        let base_error =
+            super::normalize_directory_from(Path::new("."), &base_with_newline).unwrap_err();
+        assert!(matches!(base_error, super::PathError::UnsafeCharacters(_)));
+
+        let home_with_newline = temp.path().join("home\rwith-newline");
+        let home_error = super::normalize_directory_from_with_home(
+            Path::new("~"),
+            temp.path(),
+            Some(home_with_newline),
+        )
+        .unwrap_err();
+        assert!(matches!(home_error, super::PathError::UnsafeCharacters(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_symlink_target_with_newline_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target\nwith-newline");
+        let link = temp.path().join("safe-link");
+        std::fs::create_dir(&target).unwrap();
+        symlink(&target, &link).unwrap();
+
+        let error = super::normalize_directory_from(&link, temp.path()).unwrap_err();
+        assert!(matches!(error, super::PathError::UnsafeCharacters(path) if path == target));
     }
 }

@@ -451,6 +451,16 @@ impl App {
         self.refresh(now, selected_bookmark);
     }
 
+    pub(crate) fn replace_database_with_error(
+        &mut self,
+        database: Database,
+        now: DateTime<Utc>,
+        error: impl Into<String>,
+    ) {
+        self.replace_database(database, now);
+        self.status_message = Some(error.into());
+    }
+
     fn begin_edit(&mut self, mode: EditMode) {
         let valid = match mode {
             EditMode::BookmarkRename | EditMode::BookmarkMove => self.selected_id().is_some(),
