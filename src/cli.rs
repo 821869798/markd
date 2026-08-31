@@ -258,8 +258,13 @@ struct PersistentUi<'a> {
 
 impl UiRunner for PersistentUi<'_> {
     fn run(&mut self, database: crate::model::Database) -> Result<Outcome, UiError> {
-        ui::run_with(database, |updated| {
-            self.store.save(updated).map_err(|error| error.to_string())
+        ui::run_with(database, |mutation| {
+            let mut latest = self.store.load().map_err(|error| error.to_string())?;
+            mutation.apply(&mut latest)?;
+            self.store
+                .save(&latest)
+                .map_err(|error| error.to_string())?;
+            Ok(latest)
         })
     }
 }
@@ -282,6 +287,7 @@ pub fn run_select_with<U: UiRunner>(
         .iter()
         .find(|bookmark| bookmark.id == id)
         .ok_or_else(|| anyhow!("bookmark no longer exists: {id}"))?;
+    paths::validate_path(&bookmark.path)?;
     if !bookmark.path.is_dir() {
         return Err(anyhow!(
             "directory no longer exists or is not a directory: {}",

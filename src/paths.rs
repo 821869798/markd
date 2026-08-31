@@ -18,6 +18,8 @@ pub enum PathError {
     },
     #[error("path is not a directory: {0}")]
     NotDirectory(PathBuf),
+    #[error("path contains unsupported newline characters: {0}")]
+    UnsafeCharacters(PathBuf),
     #[error("application data directory is not available")]
     DataDirectoryUnavailable,
 }
@@ -28,6 +30,7 @@ pub fn normalize_directory(input: &Path) -> Result<PathBuf, PathError> {
 }
 
 pub fn normalize_directory_from(input: &Path, base: &Path) -> Result<PathBuf, PathError> {
+    validate_path(input)?;
     let expanded = expand_home(input)?;
     let candidate = if expanded.is_absolute() {
         expanded
@@ -46,6 +49,12 @@ pub fn normalize_directory_from(input: &Path, base: &Path) -> Result<PathBuf, Pa
     Ok(canonical)
 }
 
+pub fn validate_path(path: &Path) -> Result<(), PathError> {
+    if path.to_string_lossy().contains('\n') || path.to_string_lossy().contains('\r') {
+        return Err(PathError::UnsafeCharacters(path.to_path_buf()));
+    }
+    Ok(())
+}
 pub fn default_data_file() -> Result<PathBuf, PathError> {
     let project_dirs =
         ProjectDirs::from("", "", "mkd").ok_or(PathError::DataDirectoryUnavailable)?;
@@ -98,5 +107,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let result = super::normalize_directory_from(Path::new("."), temp.path()).unwrap();
         assert_eq!(result, temp.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn paths_with_newlines_are_rejected_before_filesystem_access() {
+        let temp = tempfile::tempdir().unwrap();
+        let error =
+            super::normalize_directory_from(Path::new("safe\nname"), temp.path()).unwrap_err();
+        assert!(matches!(error, super::PathError::UnsafeCharacters(_)));
     }
 }

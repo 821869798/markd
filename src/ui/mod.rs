@@ -35,9 +35,9 @@ pub trait UiRunner {
 }
 
 /// Runs the selector with a callback used to persist management changes.
-pub fn run_with<F>(database: Database, mut persist: F) -> Result<Outcome, UiError>
+pub(crate) fn run_with<F>(database: Database, mut persist: F) -> Result<Outcome, UiError>
 where
-    F: FnMut(&Database) -> Result<(), String>,
+    F: FnMut(&app::Mutation) -> Result<Database, String>,
 {
     let mut terminal = TerminalGuard::enter()?;
     let mut app = App::from_database_at(database, Utc::now());
@@ -59,14 +59,14 @@ where
             Event::Resize(_, _) | Event::FocusGained | Event::FocusLost | Event::Paste(_) => None,
         };
         if let Some(action) = action {
-            let before = app.database_snapshot();
+            let before = app.snapshot();
             match app.handle(action, Utc::now()) {
                 Outcome::Continue => {
-                    let after = app.database_snapshot();
-                    if after != before
-                        && let Err(error) = persist(&after)
-                    {
-                        app.restore_database(before, Utc::now(), error);
+                    if let Some(mutation) = app.take_mutation() {
+                        match persist(&mutation) {
+                            Ok(updated) => app.replace_database(updated, Utc::now()),
+                            Err(error) => app.restore_snapshot(before, error),
+                        }
                     }
                 }
                 finished => break finished,
@@ -80,12 +80,23 @@ where
 
 /// Runs the interactive selector without writing terminal control bytes to stdout.
 pub fn run(database: Database) -> Result<Outcome, UiError> {
-    run_with(database, |_| Ok(()))
+    let mut current = database.clone();
+    run_with(database, |mutation| {
+        mutation.apply(&mut current)?;
+        Ok(current.clone())
+    })
 }
 
 fn key_action(event: KeyEvent, app: &App) -> Option<Action> {
     if !matches!(event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
         return None;
+    }
+    if app.is_confirming_delete() {
+        return match event.code {
+            KeyCode::Esc => Some(Action::Cancel),
+            KeyCode::Char(character) => app.pending_delete_key(character),
+            _ => None,
+        };
     }
     if app.is_editing() {
         return match event.code {
@@ -138,6 +149,9 @@ pub(crate) fn mouse_action(
     event: MouseEvent,
     elapsed: Duration,
 ) -> Option<Action> {
+    if app.is_confirming_delete() {
+        return None;
+    }
     let MouseEventKind::Down(button) = event.kind else {
         return None;
     };
@@ -327,6 +341,58 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
+    fn pending_delete_accepts_only_matching_confirmation_and_cancel() {
+        let mut app = fixture_app(2);
+        app.handle(Action::Down, test_now());
+        app.handle(Action::DeleteSelected, test_now());
+        let selected = app.selected_bookmark();
+        let pane = app.active_pane();
+        app.handle(Action::Up, test_now());
+        app.handle(Action::Input('x'), test_now());
+        app.handle(
+            Action::ClickBookmark {
+                row: 0,
+                button: ClickButton::Left,
+                elapsed: Duration::ZERO,
+            },
+            test_now(),
+        );
+        assert_eq!(app.selected_bookmark(), selected);
+        assert_eq!(app.active_pane(), pane);
+        assert_eq!(super::key_action(key_event(KeyCode::Up), &app), None);
+        assert_eq!(super::key_action(key_event(KeyCode::Char('x')), &app), None);
+        assert_eq!(super::key_action(key_event(KeyCode::Char('D')), &app), None);
+        assert_eq!(
+            super::key_action(key_event(KeyCode::Char('d')), &app),
+            Some(Action::ConfirmDelete(true))
+        );
+        assert_eq!(
+            super::mouse_action(
+                &app,
+                layout_for(Rect::new(0, 0, 80, 10)),
+                mouse_down(MouseButton::Left, 0, 0),
+                Duration::ZERO
+            ),
+            None
+        );
+
+        app.handle(Action::Cancel, test_now());
+        assert!(!app.is_confirming_delete());
+    }
+
+    #[test]
+    fn pending_category_delete_requires_uppercase_confirmation() {
+        let mut app = fixture_app(1);
+        app.handle(Action::TogglePane, test_now());
+        app.handle(Action::ClickCategory { row: 1 }, test_now());
+        app.handle(Action::DeleteCategory, test_now());
+        assert_eq!(super::key_action(key_event(KeyCode::Char('d')), &app), None);
+        assert_eq!(
+            super::key_action(key_event(KeyCode::Char('D')), &app),
+            Some(Action::ConfirmDelete(true))
+        );
+    }
+    #[test]
     fn cleanup_continues_after_failures_and_preserves_the_first_error() {
         let mut operations = FakeCleanup::failing(&["mouse", "cursor"]);
 
@@ -493,6 +559,10 @@ mod tests {
 
     fn key(code: KeyCode, searching: bool) -> Option<Action> {
         map_key_event(KeyEvent::new(code, KeyModifiers::NONE), searching)
+    }
+
+    fn key_event(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
     }
 
     fn mouse_down(button: MouseButton, column: u16, row: u16) -> MouseEvent {

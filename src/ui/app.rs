@@ -84,7 +84,40 @@ enum EditMode {
     BookmarkMove,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Mutation {
+    DeleteBookmark {
+        id: Uuid,
+    },
+    RenameBookmark {
+        id: Uuid,
+        old_name: String,
+        new_name: String,
+    },
+    CreateCategory {
+        name: String,
+    },
+    RenameCategory {
+        old: String,
+        new: String,
+    },
+    DeleteCategory {
+        name: String,
+    },
+    MoveBookmark {
+        id: Uuid,
+        old_category: String,
+        new_category: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PendingDelete {
+    Bookmark(Uuid),
+    Category(String),
+}
+
+#[derive(Debug, Clone)]
 pub struct App {
     database: Database,
     categories: Vec<String>,
@@ -102,7 +135,8 @@ pub struct App {
     bookmark_viewport_rows: usize,
     edit_mode: Option<EditMode>,
     edit_text: String,
-    delete_confirmation: bool,
+    pending_delete: Option<PendingDelete>,
+    last_mutation: Option<Mutation>,
 }
 
 impl App {
@@ -132,13 +166,20 @@ impl App {
             bookmark_viewport_rows: 0,
             edit_mode: None,
             edit_text: String::new(),
-            delete_confirmation: false,
+            pending_delete: None,
+            last_mutation: None,
         };
         app.refresh(now, None);
         app
     }
 
     pub fn handle(&mut self, action: Action, now: DateTime<Utc>) -> Outcome {
+        self.last_mutation = None;
+        if self.pending_delete.is_some()
+            && !matches!(action, Action::ConfirmDelete(_) | Action::Cancel)
+        {
+            return Outcome::Continue;
+        }
         match action {
             Action::Up => {
                 self.move_up(now);
@@ -151,8 +192,8 @@ impl App {
             Action::Confirm => self.confirm_selected(),
             Action::Cancel => {
                 self.last_click = None;
-                if self.delete_confirmation || self.edit_mode.is_some() {
-                    self.delete_confirmation = false;
+                if self.pending_delete.is_some() || self.edit_mode.is_some() {
+                    self.pending_delete = None;
                     self.edit_mode = None;
                     self.edit_text.clear();
                     self.status_message = None;
@@ -197,8 +238,8 @@ impl App {
                 Outcome::Continue
             }
             Action::DeleteSelected => {
-                if self.selected_id().is_some() {
-                    self.delete_confirmation = true;
+                if let Some(id) = self.selected_id() {
+                    self.pending_delete = Some(PendingDelete::Bookmark(id));
                     self.status_message = Some("再次按 d 确认删除，按 Esc 取消".to_owned());
                 } else {
                     self.status_message = Some("没有可删除的书签".to_owned());
@@ -206,10 +247,12 @@ impl App {
                 Outcome::Continue
             }
             Action::ConfirmDelete(confirm) => {
-                if self.delete_confirmation {
-                    self.delete_confirmation = false;
+                if let Some(pending) = self.pending_delete.take() {
                     if confirm {
-                        self.delete_selected(now);
+                        match pending {
+                            PendingDelete::Bookmark(id) => self.delete_selected(id, now),
+                            PendingDelete::Category(name) => self.delete_category(&name, now),
+                        }
                     } else {
                         self.status_message = None;
                     }
@@ -233,7 +276,14 @@ impl App {
                 Outcome::Continue
             }
             Action::DeleteCategory => {
-                self.delete_category(now);
+                if let Some(name) = self.categories.get(self.selected_category) {
+                    if self.selected_category > 0 {
+                        self.pending_delete = Some(PendingDelete::Category(name.clone()));
+                        self.status_message = Some("再次按 D 确认删除分类，按 Esc 取消".to_owned());
+                    } else {
+                        self.status_message = Some("当前选择不支持此操作".to_owned());
+                    }
+                }
                 Outcome::Continue
             }
             Action::MoveBookmarkToCategory(category) => {
@@ -357,23 +407,48 @@ impl App {
     }
 
     pub fn is_confirming_delete(&self) -> bool {
-        self.delete_confirmation
+        self.pending_delete.is_some()
     }
 
+    #[cfg(test)]
     pub(crate) fn database_snapshot(&self) -> Database {
         self.database.clone()
     }
 
-    pub(crate) fn restore_database(
-        &mut self,
-        database: Database,
-        now: DateTime<Utc>,
-        error: impl Into<String>,
-    ) {
+    pub(crate) fn pending_delete_key(&self, character: char) -> Option<Action> {
+        match (&self.pending_delete, character) {
+            (Some(PendingDelete::Bookmark(_)), 'd') | (Some(PendingDelete::Category(_)), 'D') => {
+                Some(Action::ConfirmDelete(true))
+            }
+            _ => None,
+        }
+    }
+    pub(crate) fn take_mutation(&mut self) -> Option<Mutation> {
+        self.last_mutation.take()
+    }
+
+    pub(crate) fn snapshot(&self) -> Self {
+        self.clone()
+    }
+
+    pub(crate) fn restore_snapshot(&mut self, snapshot: Self, error: impl Into<String>) {
+        *self = snapshot;
+        self.status_message = Some(error.into());
+    }
+
+    pub(crate) fn replace_database(&mut self, database: Database, now: DateTime<Utc>) {
+        let selected_category = self.categories.get(self.selected_category).cloned();
+        let selected_bookmark = self.selected_id();
         self.database = database;
         self.rebuild_categories();
-        self.refresh(now, None);
-        self.status_message = Some(error.into());
+        self.selected_category = selected_category
+            .and_then(|name| {
+                self.categories
+                    .iter()
+                    .position(|category| category == &name)
+            })
+            .unwrap_or(0);
+        self.refresh(now, selected_bookmark);
     }
 
     fn begin_edit(&mut self, mode: EditMode) {
@@ -386,7 +461,7 @@ impl App {
             self.status_message = Some("当前选择不支持此操作".to_owned());
             return;
         }
-        self.delete_confirmation = false;
+        self.pending_delete = None;
         self.edit_mode = Some(mode);
         self.edit_text.clear();
         self.status_message = None;
@@ -410,11 +485,7 @@ impl App {
         }
     }
 
-    fn delete_selected(&mut self, now: DateTime<Utc>) {
-        let Some(id) = self.selected_id() else {
-            self.status_message = Some("没有可删除的书签".to_owned());
-            return;
-        };
+    fn delete_selected(&mut self, id: Uuid, now: DateTime<Utc>) {
         if let Some(index) = self
             .database
             .bookmarks
@@ -422,7 +493,10 @@ impl App {
             .position(|bookmark| bookmark.id == id)
         {
             self.database.bookmarks.remove(index);
+            self.last_mutation = Some(Mutation::DeleteBookmark { id });
             self.refresh(now, None);
+        } else {
+            self.status_message = Some("书签不存在".to_owned());
         }
     }
 
@@ -437,7 +511,13 @@ impl App {
             .iter_mut()
             .find(|bookmark| bookmark.id == id)
         {
+            let old_name = std::mem::take(&mut bookmark.name);
             bookmark.name = name.to_owned();
+            self.last_mutation = Some(Mutation::RenameBookmark {
+                id,
+                old_name,
+                new_name: name.to_owned(),
+            });
             self.refresh(now, Some(id));
         } else {
             self.status_message = Some("书签不存在".to_owned());
@@ -447,6 +527,9 @@ impl App {
     fn create_category(&mut self, name: &str, now: DateTime<Utc>) {
         match self.database.add_category(name) {
             Ok(()) => {
+                self.last_mutation = Some(Mutation::CreateCategory {
+                    name: name.to_owned(),
+                });
                 self.rebuild_categories();
                 self.refresh(now, None);
             }
@@ -461,6 +544,10 @@ impl App {
         };
         match self.database.rename_category(&old, name) {
             Ok(()) => {
+                self.last_mutation = Some(Mutation::RenameCategory {
+                    old: old.clone(),
+                    new: name.to_owned(),
+                });
                 self.rebuild_categories();
                 self.selected_category = self
                     .categories
@@ -473,13 +560,12 @@ impl App {
         }
     }
 
-    fn delete_category(&mut self, now: DateTime<Utc>) {
-        let Some(name) = self.categories.get(self.selected_category).cloned() else {
-            self.status_message = Some("分类不存在".to_owned());
-            return;
-        };
-        match self.database.remove_category(&name) {
+    fn delete_category(&mut self, name: &str, now: DateTime<Utc>) {
+        match self.database.remove_category(name) {
             Ok(()) => {
+                self.last_mutation = Some(Mutation::DeleteCategory {
+                    name: name.to_owned(),
+                });
                 self.selected_category = self.selected_category.saturating_sub(1);
                 self.rebuild_categories();
                 self.refresh(now, None);
@@ -508,7 +594,12 @@ impl App {
             .iter_mut()
             .find(|bookmark| bookmark.id == id)
         {
-            bookmark.category = category.to_owned();
+            let old_category = std::mem::replace(&mut bookmark.category, category.to_owned());
+            self.last_mutation = Some(Mutation::MoveBookmark {
+                id,
+                old_category,
+                new_category: category.to_owned(),
+            });
             self.refresh(now, Some(id));
         } else {
             self.status_message = Some("书签不存在".to_owned());
@@ -667,6 +758,68 @@ impl App {
     }
 }
 
+impl Mutation {
+    pub(crate) fn apply(&self, database: &mut Database) -> Result<(), String> {
+        match self {
+            Self::DeleteBookmark { id } => database
+                .bookmarks
+                .iter()
+                .position(|bookmark| bookmark.id == *id)
+                .map(|index| {
+                    database.bookmarks.remove(index);
+                })
+                .ok_or_else(|| format!("bookmark no longer exists: {id}")),
+            Self::RenameBookmark {
+                id,
+                old_name,
+                new_name,
+            } => {
+                let bookmark = database
+                    .bookmarks
+                    .iter_mut()
+                    .find(|bookmark| bookmark.id == *id)
+                    .ok_or_else(|| format!("bookmark no longer exists: {id}"))?;
+                if bookmark.name != *old_name {
+                    return Err(format!("bookmark was changed externally: {id}"));
+                }
+                bookmark.name = new_name.clone();
+                Ok(())
+            }
+            Self::CreateCategory { name } => database
+                .add_category(name)
+                .map_err(|error| error.to_string()),
+            Self::RenameCategory { old, new } => database
+                .rename_category(old, new)
+                .map_err(|error| error.to_string()),
+            Self::DeleteCategory { name } => database
+                .remove_category(name)
+                .map_err(|error| error.to_string()),
+            Self::MoveBookmark {
+                id,
+                old_category,
+                new_category,
+            } => {
+                if !database
+                    .categories
+                    .iter()
+                    .any(|category| category == new_category)
+                {
+                    return Err(format!("category not found: {new_category}"));
+                }
+                let bookmark = database
+                    .bookmarks
+                    .iter_mut()
+                    .find(|bookmark| bookmark.id == *id)
+                    .ok_or_else(|| format!("bookmark no longer exists: {id}"))?;
+                if bookmark.category != *old_category {
+                    return Err(format!("bookmark was changed externally: {id}"));
+                }
+                bookmark.category = new_category.clone();
+                Ok(())
+            }
+        }
+    }
+}
 fn keep_visible(offset: usize, selected: usize, len: usize, rows: usize) -> usize {
     if len == 0 || rows == 0 {
         return 0;
@@ -683,7 +836,7 @@ fn keep_visible(offset: usize, selected: usize, len: usize, rows: usize) -> usiz
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, App, ClickButton, Outcome, Pane};
+    use super::{Action, App, ClickButton, Mutation, Outcome, Pane};
     use crate::model::{Bookmark, Database};
     use chrono::{DateTime, TimeZone, Utc};
     use std::path::PathBuf;
@@ -916,6 +1069,27 @@ mod tests {
     }
 
     #[test]
+    fn mutation_replay_preserves_external_bookmarks_and_rejects_stale_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = bookmark("first", temp.path().join("first"), "default");
+        let id = first.id;
+        let mut database = database_with(vec![first]);
+        let mutation = Mutation::RenameBookmark {
+            id,
+            old_name: "first".into(),
+            new_name: "renamed".into(),
+        };
+        database
+            .add_bookmark(temp.path().join("second"), Some("second".into()), None)
+            .unwrap();
+        mutation.apply(&mut database).unwrap();
+        assert_eq!(database.bookmarks.len(), 2);
+        assert_eq!(database.resolve_bookmark("renamed").unwrap().id, id);
+
+        database.bookmarks[0].name = "changed-externally".into();
+        assert!(mutation.apply(&mut database).is_err());
+    }
+    #[test]
     fn management_actions_update_bookmarks_and_categories() {
         let temp = tempfile::tempdir().unwrap();
         let mut app = App::from_database_at(
@@ -940,6 +1114,8 @@ mod tests {
         app.handle(Action::RenameCategory("private".into()), test_now());
         assert!(app.categories().contains(&"private".to_owned()));
         app.handle(Action::DeleteCategory, test_now());
+        assert!(app.is_confirming_delete());
+        app.handle(Action::ConfirmDelete(true), test_now());
         assert!(!app.categories().contains(&"private".to_owned()));
         assert_eq!(app.database_snapshot().bookmarks[0].id, id);
     }
@@ -965,6 +1141,44 @@ mod tests {
     }
 
     #[test]
+    fn deleting_non_first_bookmark_keeps_first_bookmark() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = bookmark("first", temp.path().join("first"), "default");
+        let second = bookmark("second", temp.path().join("second"), "default");
+        let second_id = second.id;
+        let mut app = App::from_database_at(database_with(vec![first, second]), test_now());
+        app.handle(Action::Down, test_now());
+        assert_eq!(app.selected_id(), Some(second_id));
+        app.handle(Action::DeleteSelected, test_now());
+        app.handle(Action::ConfirmDelete(true), test_now());
+        let database = app.database_snapshot();
+        assert_eq!(database.bookmarks.len(), 1);
+        assert_eq!(database.bookmarks[0].name, "first");
+    }
+
+    #[test]
+    fn persistence_failure_restores_edit_mode_and_input() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = App::from_database_at(
+            database_with(vec![bookmark(
+                "before",
+                temp.path().to_path_buf(),
+                "default",
+            )]),
+            test_now(),
+        );
+        app.handle(Action::BeginRename, test_now());
+        app.handle(Action::Input('d'), test_now());
+        app.handle(Action::Input('r'), test_now());
+        let snapshot = app.snapshot();
+        app.handle(Action::CommitRename("saved".into()), test_now());
+        app.restore_snapshot(snapshot, "save failed");
+        assert!(app.is_editing());
+        assert_eq!(app.edit_text(), "dr");
+        assert_eq!(app.database_snapshot().bookmarks[0].name, "before");
+        assert_eq!(app.status_message(), Some("save failed"));
+    }
+    #[test]
     fn edit_cancel_preserves_data() {
         let temp = tempfile::tempdir().unwrap();
         let mut app = App::from_database_at(
@@ -980,6 +1194,7 @@ mod tests {
         app.handle(Action::Cancel, test_now());
         assert_eq!(app.database_snapshot().bookmarks[0].name, "project");
     }
+
     fn click(app: &mut App, row: usize, button: ClickButton, millis: u64) -> Outcome {
         app.handle(
             Action::ClickBookmark {

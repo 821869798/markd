@@ -374,6 +374,26 @@ fn powershell_function_forwards_arguments_status_and_selection_safely() {
 }
 
 #[test]
+fn bash_selection_with_newline_path_does_not_change_directory() {
+    let Some(bash) = command_path("bash", &["--version"]) else {
+        eprintln!("skipping Bash newline selection test: bash is unavailable");
+        return;
+    };
+    let fixture = FakeFixture::bash();
+    let output = fixture.run_bash(
+        &bash,
+        "mkd; mkd_status=$?; printf '%s' \"$mkd_status\" > \"$FAKE_STATUS_FILE\"; : > \"$PWD/$MARKER_NAME\"",
+        &[],
+        "path-with-newline\nnot-a-directory",
+        0,
+        0,
+    );
+    assert_success("Bash newline selection", &output);
+    assert_eq!(fs::read(&fixture.status_path).unwrap(), b"1");
+    assert!(fixture.root.path().join("marker").is_file());
+}
+
+#[test]
 fn init_command_stdout_is_exactly_the_generated_script() {
     for (name, shell) in [
         ("bash", Shell::Bash),
@@ -491,7 +511,7 @@ impl FakeFixture {
     fn special_target(&self) -> PathBuf {
         #[cfg(unix)]
         {
-            self.root.path().join("folder with * wildcard\nユニコード")
+            self.root.path().join("folder with * wildcard-unicode")
         }
         #[cfg(windows)]
         {

@@ -180,6 +180,35 @@ fn invalid_add_does_not_create_database() {
 }
 
 #[test]
+fn newline_path_is_rejected_without_creating_database() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("db.json");
+    mkd(&data)
+        .args(["add", "bad\nname"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("unsupported newline"));
+    assert!(!data.exists());
+}
+
+#[test]
+fn final_selection_rejects_newline_path_from_hand_edited_database() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = mkd_store(temp.path());
+    let mut database = Database::default();
+    database
+        .add_bookmark(temp.path().to_path_buf(), Some("repo".into()), None)
+        .unwrap();
+    let id = database.bookmarks[0].id;
+    database.bookmarks[0].path = std::path::PathBuf::from("safe\nname");
+    store.save(&database).unwrap();
+    let error = run_select_with(&store, FakeUi(Some(id)), chrono::Utc::now()).unwrap_err();
+    assert!(error.to_string().contains("unsupported newline"));
+    assert_eq!(store.load().unwrap().bookmarks[0].visit_count, 0);
+}
+
+#[test]
 fn rename_and_remove_bookmark() {
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("db.json");
