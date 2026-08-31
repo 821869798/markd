@@ -2,9 +2,91 @@ use std::fs;
 use std::path::Path;
 
 use assert_cmd::Command;
+use mkd::cli::run_select_with;
+use mkd::model::Database;
 use mkd::shell::{Shell, init_script};
+use mkd::ui::UiError;
+use mkd::ui::UiRunner;
+use mkd::ui::app::Outcome;
 use predicates::prelude::*;
 
+#[test]
+fn selection_transaction_outputs_absolute_path_and_records_visit() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("db.json");
+    let store = mkd::store::Store::at(data.clone());
+    let mut database = Database::default();
+    database
+        .add_bookmark(temp.path().to_path_buf(), Some("repo".into()), None)
+        .unwrap();
+    let id = database.bookmarks[0].id;
+    store.save(&database).unwrap();
+    let now = chrono::Utc::now();
+    let output = run_select_with(&store, FakeUi(Some(id)), now).unwrap();
+    assert_eq!(
+        output,
+        format!("{}\n", temp.path().canonicalize().unwrap().display())
+    );
+    let saved = store.load().unwrap();
+    assert_eq!(saved.bookmarks[0].visit_count, 1);
+    assert_eq!(saved.bookmarks[0].last_visited_at, Some(now));
+}
+
+#[test]
+fn cancelled_selection_has_empty_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = mkd_store(temp.path());
+    let output = run_select_with(&store, FakeUi(None), chrono::Utc::now()).unwrap();
+    assert_eq!(output, "");
+}
+
+#[test]
+fn vanished_selection_fails_without_recording_visit_or_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("gone");
+    fs::create_dir(&path).unwrap();
+    let store = mkd_store(temp.path());
+    let mut database = Database::default();
+    database.add_bookmark(path.clone(), None, None).unwrap();
+    let id = database.bookmarks[0].id;
+    store.save(&database).unwrap();
+    fs::remove_dir(&path).unwrap();
+    let error = run_select_with(&store, FakeUi(Some(id)), chrono::Utc::now()).unwrap_err();
+    assert!(error.to_string().contains("no longer exists"));
+    assert_eq!(store.load().unwrap().bookmarks[0].visit_count, 0);
+}
+
+#[test]
+fn save_failure_fails_without_output_or_visit_update() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("db.json");
+    let store = mkd_store(temp.path());
+    let mut database = Database::default();
+    database
+        .add_bookmark(temp.path().to_path_buf(), None, None)
+        .unwrap();
+    let id = database.bookmarks[0].id;
+    store.save(&database).unwrap();
+    fs::remove_file(&data).unwrap();
+    fs::create_dir(&data).unwrap();
+    let error = run_select_with(&store, FakeUi(Some(id)), chrono::Utc::now()).unwrap_err();
+    assert!(error.to_string().contains("cannot"));
+}
+
+struct FakeUi(Option<uuid::Uuid>);
+
+impl UiRunner for FakeUi {
+    fn run(&mut self, _database: Database) -> Result<Outcome, UiError> {
+        Ok(self.0.map_or(Outcome::Cancelled, |id| Outcome::Selected {
+            id,
+            path: std::path::PathBuf::new(),
+        }))
+    }
+}
+
+fn mkd_store(root: &Path) -> mkd::store::Store {
+    mkd::store::Store::at(root.join("db.json"))
+}
 fn mkd(data_file: &Path) -> Command {
     let mut command = Command::cargo_bin("mkd").unwrap();
     command.env("MKD_DATA_FILE", data_file);
@@ -286,15 +368,11 @@ fn unavailable_interactive_entries_fail_without_stdout_or_panic() {
         .assert()
         .failure()
         .stdout(predicate::str::is_empty())
-        .stderr(predicate::str::contains(
-            "interactive interface is not available",
-        ));
+        .stderr(predicate::str::contains("requires a terminal"));
     mkd(&data)
         .arg("__select")
         .assert()
         .failure()
         .stdout(predicate::str::is_empty())
-        .stderr(predicate::str::contains(
-            "interactive selection is not available",
-        ));
+        .stderr(predicate::str::contains("requires a terminal"));
 }

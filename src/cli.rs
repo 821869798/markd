@@ -3,12 +3,15 @@ use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
+use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand};
 
 use crate::paths;
 use crate::setup::{self, SetupRequest, SystemEnvironment};
 use crate::shell;
 use crate::store::Store;
+use crate::ui::app::Outcome;
+use crate::ui::{self, UiError, UiRunner};
 
 pub use crate::shell::Shell;
 
@@ -101,8 +104,8 @@ impl Cli {
                 Ok(())
             }
             Some(Command::Setup(arguments)) => setup_shell(arguments),
-            Some(Command::Select) => Err(anyhow!("interactive selection is not available yet")),
-            None => Err(anyhow!("interactive interface is not available yet")),
+            Some(Command::Select) => select(),
+            None => select(),
         }
     }
 }
@@ -229,6 +232,71 @@ fn category(command: CategoryCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn select() -> Result<()> {
+    let stdin = io::stdin();
+    let stderr = io::stderr();
+    if !stdin.is_terminal() || !stderr.is_terminal() {
+        return Err(anyhow!(
+            "interactive selection requires a terminal; interactive selection is not available in this environment"
+        ));
+    }
+    let store = store()?;
+    let output = run_select_with(&store, PersistentUi { store: &store }, Utc::now())?;
+    if !output.is_empty() {
+        let stdout = io::stdout();
+        let mut writer = stdout.lock();
+        writer.write_all(output.as_bytes())?;
+    }
+    Ok(())
+}
+
+struct PersistentUi<'a> {
+    store: &'a Store,
+}
+
+impl UiRunner for PersistentUi<'_> {
+    fn run(&mut self, database: crate::model::Database) -> Result<Outcome, UiError> {
+        ui::run_with(database, |updated| {
+            self.store.save(updated).map_err(|error| error.to_string())
+        })
+    }
+}
+
+/// Executes the selection transaction against a UI runner.
+pub fn run_select_with<U: UiRunner>(
+    store: &Store,
+    mut ui_runner: U,
+    now: DateTime<Utc>,
+) -> Result<String> {
+    let database = store.load()?;
+    let outcome = ui_runner.run(database)?;
+    let Outcome::Selected { id, .. } = outcome else {
+        return Ok(String::new());
+    };
+
+    let mut latest = store.load()?;
+    let bookmark = latest
+        .bookmarks
+        .iter()
+        .find(|bookmark| bookmark.id == id)
+        .ok_or_else(|| anyhow!("bookmark no longer exists: {id}"))?;
+    if !bookmark.path.is_dir() {
+        return Err(anyhow!(
+            "directory no longer exists or is not a directory: {}",
+            bookmark.path.display()
+        ));
+    }
+    let path = bookmark.path.canonicalize().map_err(|error| {
+        anyhow!(
+            "cannot resolve selected directory {}: {error}",
+            bookmark.path.display()
+        )
+    })?;
+    latest.record_visit(id, now)?;
+    store.save(&latest)?;
+    Ok(format!("{}\n", path.display()))
 }
 
 fn store() -> Result<Store> {

@@ -32,6 +32,17 @@ pub enum Action {
     StartSearch,
     Input(char),
     Backspace,
+    DeleteSelected,
+    ConfirmDelete(bool),
+    BeginRename,
+    CommitRename(String),
+    CreateCategory(String),
+    RenameCategory(String),
+    DeleteCategory,
+    MoveBookmarkToCategory(String),
+    BeginCreateCategory,
+    BeginRenameCategory,
+    BeginMoveBookmark,
     ClickBookmark {
         row: usize,
         button: ClickButton,
@@ -65,6 +76,14 @@ struct LastClick {
     elapsed: Duration,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditMode {
+    BookmarkRename,
+    CategoryCreate,
+    CategoryRename,
+    BookmarkMove,
+}
+
 #[derive(Debug)]
 pub struct App {
     database: Database,
@@ -81,6 +100,9 @@ pub struct App {
     bookmark_offset: usize,
     category_viewport_rows: usize,
     bookmark_viewport_rows: usize,
+    edit_mode: Option<EditMode>,
+    edit_text: String,
+    delete_confirmation: bool,
 }
 
 impl App {
@@ -108,6 +130,9 @@ impl App {
             bookmark_offset: 0,
             category_viewport_rows: 0,
             bookmark_viewport_rows: 0,
+            edit_mode: None,
+            edit_text: String::new(),
+            delete_confirmation: false,
         };
         app.refresh(now, None);
         app
@@ -126,7 +151,13 @@ impl App {
             Action::Confirm => self.confirm_selected(),
             Action::Cancel => {
                 self.last_click = None;
-                if self.search_mode {
+                if self.delete_confirmation || self.edit_mode.is_some() {
+                    self.delete_confirmation = false;
+                    self.edit_mode = None;
+                    self.edit_text.clear();
+                    self.status_message = None;
+                    Outcome::Continue
+                } else if self.search_mode {
                     self.search_mode = false;
                     Outcome::Continue
                 } else {
@@ -152,13 +183,73 @@ impl App {
                 if self.search_mode && !character.is_control() {
                     self.search_text.push(character);
                     self.refresh(now, None);
+                } else if self.edit_mode.is_some() && !character.is_control() {
+                    self.edit_text.push(character);
                 }
                 Outcome::Continue
             }
             Action::Backspace => {
                 if self.search_mode && self.search_text.pop().is_some() {
                     self.refresh(now, None);
+                } else if self.edit_mode.is_some() {
+                    self.edit_text.pop();
                 }
+                Outcome::Continue
+            }
+            Action::DeleteSelected => {
+                if self.selected_id().is_some() {
+                    self.delete_confirmation = true;
+                    self.status_message = Some("再次按 d 确认删除，按 Esc 取消".to_owned());
+                } else {
+                    self.status_message = Some("没有可删除的书签".to_owned());
+                }
+                Outcome::Continue
+            }
+            Action::ConfirmDelete(confirm) => {
+                if self.delete_confirmation {
+                    self.delete_confirmation = false;
+                    if confirm {
+                        self.delete_selected(now);
+                    } else {
+                        self.status_message = None;
+                    }
+                }
+                Outcome::Continue
+            }
+            Action::BeginRename => {
+                self.begin_edit(EditMode::BookmarkRename);
+                Outcome::Continue
+            }
+            Action::CommitRename(name) => {
+                self.commit_edit(EditMode::BookmarkRename, name, now);
+                Outcome::Continue
+            }
+            Action::CreateCategory(name) => {
+                self.create_category(&name, now);
+                Outcome::Continue
+            }
+            Action::RenameCategory(name) => {
+                self.rename_category(&name, now);
+                Outcome::Continue
+            }
+            Action::DeleteCategory => {
+                self.delete_category(now);
+                Outcome::Continue
+            }
+            Action::MoveBookmarkToCategory(category) => {
+                self.move_bookmark(&category, now);
+                Outcome::Continue
+            }
+            Action::BeginCreateCategory => {
+                self.begin_edit(EditMode::CategoryCreate);
+                Outcome::Continue
+            }
+            Action::BeginRenameCategory => {
+                self.begin_edit(EditMode::CategoryRename);
+                Outcome::Continue
+            }
+            Action::BeginMoveBookmark => {
+                self.begin_edit(EditMode::BookmarkMove);
                 Outcome::Continue
             }
             Action::ClickBookmark {
@@ -237,6 +328,207 @@ impl App {
         } else {
             self.bookmark_offset = 0;
         }
+    }
+
+    pub fn is_editing(&self) -> bool {
+        self.edit_mode.is_some()
+    }
+
+    pub fn edit_text(&self) -> &str {
+        &self.edit_text
+    }
+
+    pub fn edit_prompt(&self) -> Option<&str> {
+        self.edit_mode.map(|mode| match mode {
+            EditMode::BookmarkRename => "重命名书签",
+            EditMode::CategoryCreate => "新建分类",
+            EditMode::CategoryRename => "重命名分类",
+            EditMode::BookmarkMove => "移动到分类",
+        })
+    }
+
+    pub(crate) fn commit_editing_action(&self) -> Option<Action> {
+        self.edit_mode.map(|mode| match mode {
+            EditMode::BookmarkRename => Action::CommitRename(self.edit_text.clone()),
+            EditMode::CategoryCreate => Action::CreateCategory(self.edit_text.clone()),
+            EditMode::CategoryRename => Action::RenameCategory(self.edit_text.clone()),
+            EditMode::BookmarkMove => Action::MoveBookmarkToCategory(self.edit_text.clone()),
+        })
+    }
+
+    pub fn is_confirming_delete(&self) -> bool {
+        self.delete_confirmation
+    }
+
+    pub(crate) fn database_snapshot(&self) -> Database {
+        self.database.clone()
+    }
+
+    pub(crate) fn restore_database(
+        &mut self,
+        database: Database,
+        now: DateTime<Utc>,
+        error: impl Into<String>,
+    ) {
+        self.database = database;
+        self.rebuild_categories();
+        self.refresh(now, None);
+        self.status_message = Some(error.into());
+    }
+
+    fn begin_edit(&mut self, mode: EditMode) {
+        let valid = match mode {
+            EditMode::BookmarkRename | EditMode::BookmarkMove => self.selected_id().is_some(),
+            EditMode::CategoryCreate => true,
+            EditMode::CategoryRename => self.selected_category > 0,
+        };
+        if !valid {
+            self.status_message = Some("当前选择不支持此操作".to_owned());
+            return;
+        }
+        self.delete_confirmation = false;
+        self.edit_mode = Some(mode);
+        self.edit_text.clear();
+        self.status_message = None;
+    }
+
+    fn commit_edit(&mut self, expected: EditMode, text: String, now: DateTime<Utc>) {
+        if self.edit_mode != Some(expected) {
+            return;
+        }
+        self.edit_mode = None;
+        self.edit_text.clear();
+        if text.trim().is_empty() {
+            self.status_message = Some("名称不能为空".to_owned());
+            return;
+        }
+        match expected {
+            EditMode::BookmarkRename => self.rename_selected(&text, now),
+            EditMode::CategoryCreate => self.create_category(&text, now),
+            EditMode::CategoryRename => self.rename_category(&text, now),
+            EditMode::BookmarkMove => self.move_bookmark(&text, now),
+        }
+    }
+
+    fn delete_selected(&mut self, now: DateTime<Utc>) {
+        let Some(id) = self.selected_id() else {
+            self.status_message = Some("没有可删除的书签".to_owned());
+            return;
+        };
+        if let Some(index) = self
+            .database
+            .bookmarks
+            .iter()
+            .position(|bookmark| bookmark.id == id)
+        {
+            self.database.bookmarks.remove(index);
+            self.refresh(now, None);
+        }
+    }
+
+    fn rename_selected(&mut self, name: &str, now: DateTime<Utc>) {
+        let Some(id) = self.selected_id() else {
+            self.status_message = Some("没有可重命名的书签".to_owned());
+            return;
+        };
+        if let Some(bookmark) = self
+            .database
+            .bookmarks
+            .iter_mut()
+            .find(|bookmark| bookmark.id == id)
+        {
+            bookmark.name = name.to_owned();
+            self.refresh(now, Some(id));
+        } else {
+            self.status_message = Some("书签不存在".to_owned());
+        }
+    }
+
+    fn create_category(&mut self, name: &str, now: DateTime<Utc>) {
+        match self.database.add_category(name) {
+            Ok(()) => {
+                self.rebuild_categories();
+                self.refresh(now, None);
+            }
+            Err(error) => self.status_message = Some(error.to_string()),
+        }
+    }
+
+    fn rename_category(&mut self, name: &str, now: DateTime<Utc>) {
+        let Some(old) = self.categories.get(self.selected_category).cloned() else {
+            self.status_message = Some("分类不存在".to_owned());
+            return;
+        };
+        match self.database.rename_category(&old, name) {
+            Ok(()) => {
+                self.rebuild_categories();
+                self.selected_category = self
+                    .categories
+                    .iter()
+                    .position(|category| category == name)
+                    .unwrap_or(0);
+                self.refresh(now, None);
+            }
+            Err(error) => self.status_message = Some(error.to_string()),
+        }
+    }
+
+    fn delete_category(&mut self, now: DateTime<Utc>) {
+        let Some(name) = self.categories.get(self.selected_category).cloned() else {
+            self.status_message = Some("分类不存在".to_owned());
+            return;
+        };
+        match self.database.remove_category(&name) {
+            Ok(()) => {
+                self.selected_category = self.selected_category.saturating_sub(1);
+                self.rebuild_categories();
+                self.refresh(now, None);
+            }
+            Err(error) => self.status_message = Some(error.to_string()),
+        }
+    }
+
+    fn move_bookmark(&mut self, category: &str, now: DateTime<Utc>) {
+        let Some(id) = self.selected_id() else {
+            self.status_message = Some("没有可移动的书签".to_owned());
+            return;
+        };
+        if !self
+            .database
+            .categories
+            .iter()
+            .any(|candidate| candidate == category)
+        {
+            self.status_message = Some(format!("category not found: {category}"));
+            return;
+        }
+        if let Some(bookmark) = self
+            .database
+            .bookmarks
+            .iter_mut()
+            .find(|bookmark| bookmark.id == id)
+        {
+            bookmark.category = category.to_owned();
+            self.refresh(now, Some(id));
+        } else {
+            self.status_message = Some("书签不存在".to_owned());
+        }
+    }
+
+    fn selected_id(&self) -> Option<Uuid> {
+        self.selected_bookmark
+            .and_then(|index| self.visible_bookmarks.get(index))
+            .map(|bookmark| bookmark.id)
+    }
+
+    fn rebuild_categories(&mut self) {
+        self.categories.clear();
+        self.categories.push("全部".to_owned());
+        self.categories
+            .extend(self.database.categories.iter().cloned());
+        self.selected_category = self
+            .selected_category
+            .min(self.categories.len().saturating_sub(1));
     }
 
     fn move_up(&mut self, now: DateTime<Utc>) {
@@ -623,6 +915,71 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn management_actions_update_bookmarks_and_categories() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = App::from_database_at(
+            database_with(vec![bookmark("old", temp.path().to_path_buf(), "default")]),
+            test_now(),
+        );
+        let id = app.visible_bookmarks()[0].id;
+
+        app.handle(Action::BeginRename, test_now());
+        app.handle(Action::CommitRename("new".into()), test_now());
+        assert_eq!(app.visible_bookmarks()[0].name, "new");
+
+        app.handle(Action::CreateCategory("personal".into()), test_now());
+        assert!(app.categories().contains(&"personal".to_owned()));
+        app.handle(
+            Action::MoveBookmarkToCategory("personal".into()),
+            test_now(),
+        );
+        assert_eq!(app.visible_bookmarks()[0].category, "personal");
+
+        app.handle(Action::ClickCategory { row: 2 }, test_now());
+        app.handle(Action::RenameCategory("private".into()), test_now());
+        assert!(app.categories().contains(&"private".to_owned()));
+        app.handle(Action::DeleteCategory, test_now());
+        assert!(!app.categories().contains(&"private".to_owned()));
+        assert_eq!(app.database_snapshot().bookmarks[0].id, id);
+    }
+
+    #[test]
+    fn delete_requires_confirmation_and_cancel_preserves_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = App::from_database_at(
+            database_with(vec![bookmark(
+                "project",
+                temp.path().to_path_buf(),
+                "default",
+            )]),
+            test_now(),
+        );
+        app.handle(Action::DeleteSelected, test_now());
+        assert!(app.is_confirming_delete());
+        app.handle(Action::ConfirmDelete(false), test_now());
+        assert_eq!(app.database_snapshot().bookmarks.len(), 1);
+        app.handle(Action::DeleteSelected, test_now());
+        app.handle(Action::ConfirmDelete(true), test_now());
+        assert!(app.database_snapshot().bookmarks.is_empty());
+    }
+
+    #[test]
+    fn edit_cancel_preserves_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = App::from_database_at(
+            database_with(vec![bookmark(
+                "project",
+                temp.path().to_path_buf(),
+                "default",
+            )]),
+            test_now(),
+        );
+        app.handle(Action::BeginRename, test_now());
+        app.handle(Action::Input('x'), test_now());
+        app.handle(Action::Cancel, test_now());
+        assert_eq!(app.database_snapshot().bookmarks[0].name, "project");
+    }
     fn click(app: &mut App, row: usize, button: ClickButton, millis: u64) -> Outcome {
         app.handle(
             Action::ClickBookmark {

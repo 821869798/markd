@@ -85,6 +85,42 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
         Style::default().fg(Color::DarkGray)
     };
     frame.render_widget(Paragraph::new(footer).style(footer_style), vertical[2]);
+
+    if app.is_confirming_delete() {
+        let popup = centered_rect(60, 20, area);
+        frame.render_widget(
+            Paragraph::new("确认删除当前书签？再次按 d 确认，Esc 取消")
+                .block(Block::default().borders(Borders::ALL).title("确认")),
+            popup,
+        );
+    } else if app.is_editing() {
+        let popup = centered_rect(60, 20, area);
+        let title = app.edit_prompt().unwrap_or("编辑");
+        frame.render_widget(
+            Paragraph::new(app.edit_text())
+                .block(Block::default().borders(Borders::ALL).title(title)),
+            popup,
+        );
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
 }
 
 fn render_categories(frame: &mut Frame<'_>, app: &App, layout: ViewLayout) {

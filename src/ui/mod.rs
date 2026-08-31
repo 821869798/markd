@@ -26,10 +26,19 @@ pub mod view;
 pub enum UiError {
     #[error("terminal I/O failed: {0}")]
     Io(#[from] io::Error),
+    #[error("persistence failed: {0}")]
+    Persistence(String),
 }
 
-/// Runs the interactive selector without writing terminal control bytes to stdout.
-pub fn run(database: Database) -> Result<Outcome, UiError> {
+pub trait UiRunner {
+    fn run(&mut self, database: Database) -> Result<Outcome, UiError>;
+}
+
+/// Runs the selector with a callback used to persist management changes.
+pub fn run_with<F>(database: Database, mut persist: F) -> Result<Outcome, UiError>
+where
+    F: FnMut(&Database) -> Result<(), String>,
+{
     let mut terminal = TerminalGuard::enter()?;
     let mut app = App::from_database_at(database, Utc::now());
     let started_at = Instant::now();
@@ -40,7 +49,7 @@ pub fn run(database: Database) -> Result<Outcome, UiError> {
             .draw(|frame| view::render(frame, &mut app))?;
         let area = terminal.terminal_mut().size()?;
         let action = match event::read()? {
-            Event::Key(key) => map_key_event(key, app.is_searching()),
+            Event::Key(key) => key_action(key, &app),
             Event::Mouse(mouse) => mouse_action(
                 &app,
                 layout_for(ratatui::layout::Rect::new(0, 0, area.width, area.height)),
@@ -50,8 +59,16 @@ pub fn run(database: Database) -> Result<Outcome, UiError> {
             Event::Resize(_, _) | Event::FocusGained | Event::FocusLost | Event::Paste(_) => None,
         };
         if let Some(action) = action {
+            let before = app.database_snapshot();
             match app.handle(action, Utc::now()) {
-                Outcome::Continue => {}
+                Outcome::Continue => {
+                    let after = app.database_snapshot();
+                    if after != before
+                        && let Err(error) = persist(&after)
+                    {
+                        app.restore_database(before, Utc::now(), error);
+                    }
+                }
                 finished => break finished,
             }
         }
@@ -59,6 +76,34 @@ pub fn run(database: Database) -> Result<Outcome, UiError> {
 
     terminal.restore()?;
     Ok(outcome)
+}
+
+/// Runs the interactive selector without writing terminal control bytes to stdout.
+pub fn run(database: Database) -> Result<Outcome, UiError> {
+    run_with(database, |_| Ok(()))
+}
+
+fn key_action(event: KeyEvent, app: &App) -> Option<Action> {
+    if !matches!(event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return None;
+    }
+    if app.is_editing() {
+        return match event.code {
+            KeyCode::Enter => app.commit_editing_action(),
+            KeyCode::Esc => Some(Action::Cancel),
+            KeyCode::Backspace => Some(Action::Backspace),
+            KeyCode::Char(character)
+                if event.modifiers.is_empty() || event.modifiers == KeyModifiers::SHIFT =>
+            {
+                Some(Action::Input(character))
+            }
+            _ => None,
+        };
+    }
+    if app.is_confirming_delete() && matches!(event.code, KeyCode::Char('d')) {
+        return Some(Action::ConfirmDelete(true));
+    }
+    map_key_event(event, app.is_searching())
 }
 
 pub(crate) fn map_key_event(event: KeyEvent, searching: bool) -> Option<Action> {
@@ -77,6 +122,12 @@ pub(crate) fn map_key_event(event: KeyEvent, searching: bool) -> Option<Action> 
         KeyCode::Char('/') if plain_or_shift => Some(Action::StartSearch),
         KeyCode::Char('k') if plain_or_shift => Some(Action::Up),
         KeyCode::Char('j') if plain_or_shift => Some(Action::Down),
+        KeyCode::Char('d') if !searching && plain_or_shift => Some(Action::DeleteSelected),
+        KeyCode::Char('e') if !searching && plain_or_shift => Some(Action::BeginRename),
+        KeyCode::Char('c') if !searching && plain_or_shift => Some(Action::BeginCreateCategory),
+        KeyCode::Char('r') if !searching && plain_or_shift => Some(Action::BeginRenameCategory),
+        KeyCode::Char('D') if !searching && plain_or_shift => Some(Action::DeleteCategory),
+        KeyCode::Char('m') if !searching && plain_or_shift => Some(Action::BeginMoveBookmark),
         _ => None,
     }
 }
