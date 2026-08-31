@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use assert_cmd::Command;
+use mkd::shell::{Shell, init_script};
 use predicates::prelude::*;
 
 fn mkd(data_file: &Path) -> Command {
@@ -10,6 +11,24 @@ fn mkd(data_file: &Path) -> Command {
     command
 }
 
+#[test]
+fn init_command_output_matches_generated_script_exactly() {
+    for (name, shell) in [
+        ("bash", Shell::Bash),
+        ("zsh", Shell::Zsh),
+        ("fish", Shell::Fish),
+        ("powershell", Shell::Powershell),
+    ] {
+        let output = Command::cargo_bin("mkd")
+            .unwrap()
+            .args(["init", name])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, init_script(shell).as_bytes());
+        assert!(output.stderr.is_empty());
+    }
+}
 #[test]
 fn add_and_list_bookmark_keep_data_and_status_on_separate_streams() {
     let temp = tempfile::tempdir().unwrap();
