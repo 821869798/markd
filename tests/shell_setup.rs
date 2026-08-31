@@ -4,8 +4,237 @@ use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Output};
 
 use assert_cmd::Command;
+use mkd::setup::{BLOCK_END, BLOCK_START, SetupError, install_managed_block, remove_managed_block};
 use mkd::shell::{Shell, init_script};
 use predicates::prelude::*;
+
+#[test]
+fn install_is_idempotent_and_preserves_user_content() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join(".bashrc");
+    fs::write(&profile, b"export EDITOR=vim\n").unwrap();
+
+    install_managed_block(&profile, "mkd() { :; }\n").unwrap();
+    let installed = fs::read(&profile).unwrap();
+    install_managed_block(&profile, "mkd() { :; }\n").unwrap();
+
+    assert_eq!(fs::read(&profile).unwrap(), installed);
+    let text = String::from_utf8(installed).unwrap();
+    assert_eq!(text.matches(BLOCK_START).count(), 1);
+    assert_eq!(text.matches(BLOCK_END).count(), 1);
+    assert!(text.contains("export EDITOR=vim\n"));
+}
+
+#[test]
+fn existing_managed_block_is_replaced_and_original_is_backed_up() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join(".bashrc");
+    let original =
+        format!("export EDITOR=vim\n{BLOCK_START}\nold code\n{BLOCK_END}\nalias g=git\n");
+    fs::write(&profile, original.as_bytes()).unwrap();
+
+    install_managed_block(&profile, "new code\n").unwrap();
+
+    assert_eq!(
+        fs::read(temp.path().join(".bashrc.mkd-backup")).unwrap(),
+        original.as_bytes()
+    );
+    assert_eq!(
+        fs::read_to_string(&profile).unwrap(),
+        format!("export EDITOR=vim\n{BLOCK_START}\nnew code\n{BLOCK_END}\nalias g=git\n")
+    );
+}
+
+#[test]
+fn malformed_or_ambiguous_markers_refuse_to_modify_file() {
+    let cases = [
+        format!("alias g=git\n{BLOCK_START}\n"),
+        format!("alias g=git\n{BLOCK_END}\n"),
+        format!("{BLOCK_START}\none\n{BLOCK_END}\n{BLOCK_START}\ntwo\n{BLOCK_END}\n"),
+        format!("{BLOCK_START}\none\n{BLOCK_START}\ntwo\n{BLOCK_END}\n{BLOCK_END}\n"),
+        format!("{BLOCK_END}\ncode\n{BLOCK_START}\n"),
+    ];
+
+    for (index, original) in cases.into_iter().enumerate() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = temp.path().join(format!("profile-{index}"));
+        fs::write(&profile, original.as_bytes()).unwrap();
+
+        assert!(matches!(
+            install_managed_block(&profile, "code\n"),
+            Err(SetupError::MalformedBlock)
+        ));
+        assert_eq!(fs::read(&profile).unwrap(), original.as_bytes());
+        assert!(matches!(
+            remove_managed_block(&profile),
+            Err(SetupError::MalformedBlock)
+        ));
+        assert_eq!(fs::read(&profile).unwrap(), original.as_bytes());
+        assert!(
+            !temp
+                .path()
+                .join(format!("profile-{index}.mkd-backup"))
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn managed_marker_text_inside_the_script_is_rejected_without_writing() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join("profile");
+
+    assert!(matches!(
+        install_managed_block(&profile, &format!("echo ok\n{BLOCK_END}\n")),
+        Err(SetupError::MalformedBlock)
+    ));
+    assert!(!profile.exists());
+}
+
+#[test]
+fn backup_failure_preserves_the_original_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join("profile");
+    let original = b"user content\n";
+    fs::write(&profile, original).unwrap();
+    fs::create_dir(temp.path().join("profile.mkd-backup")).unwrap();
+
+    assert!(install_managed_block(&profile, "code\n").is_err());
+    assert_eq!(fs::read(&profile).unwrap(), original);
+}
+
+#[test]
+fn remove_is_idempotent_and_only_removes_a_complete_block() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join(".zshrc");
+    let installed = format!("before\n{BLOCK_START}\ncode\n{BLOCK_END}\nafter\n");
+    fs::write(&profile, installed.as_bytes()).unwrap();
+
+    remove_managed_block(&profile).unwrap();
+    assert_eq!(fs::read_to_string(&profile).unwrap(), "before\nafter\n");
+    assert_eq!(
+        fs::read(temp.path().join(".zshrc.mkd-backup")).unwrap(),
+        installed.as_bytes()
+    );
+
+    let once_removed = fs::read(&profile).unwrap();
+    remove_managed_block(&profile).unwrap();
+    assert_eq!(fs::read(&profile).unwrap(), once_removed);
+    remove_managed_block(&temp.path().join("missing-profile")).unwrap();
+}
+
+#[test]
+fn setup_cli_installs_and_updates_the_exact_override_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join("custom profile");
+    fs::write(&profile, b"user content\n").unwrap();
+
+    Command::cargo_bin("mkd")
+        .unwrap()
+        .env("MKD_SHELL_PROFILE", &profile)
+        .args(["setup", "bash", "--yes"])
+        .assert()
+        .success();
+    let first = fs::read(&profile).unwrap();
+    assert!(String::from_utf8_lossy(&first).contains(BLOCK_START));
+
+    Command::cargo_bin("mkd")
+        .unwrap()
+        .env("MKD_SHELL_PROFILE", &profile)
+        .args(["setup", "bash", "--yes"])
+        .assert()
+        .success();
+    assert_eq!(fs::read(&profile).unwrap(), first);
+}
+
+#[test]
+fn setup_dry_run_previews_without_creating_any_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path().join("not-created");
+    let profile = parent.join("profile");
+
+    Command::cargo_bin("mkd")
+        .unwrap()
+        .env("MKD_SHELL_PROFILE", &profile)
+        .args(["setup", "fish", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(BLOCK_START).and(predicate::str::contains(BLOCK_END)));
+
+    assert!(!parent.exists());
+    assert!(!PathBuf::from(format!("{}.mkd-backup", profile.display())).exists());
+}
+
+#[test]
+fn dry_run_of_existing_profile_does_not_create_a_backup() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join("profile");
+    let original = b"user content\n";
+    fs::write(&profile, original).unwrap();
+
+    Command::cargo_bin("mkd")
+        .unwrap()
+        .env("MKD_SHELL_PROFILE", &profile)
+        .args(["setup", "bash", "--dry-run"])
+        .assert()
+        .success();
+
+    assert_eq!(fs::read(&profile).unwrap(), original);
+    assert!(!temp.path().join("profile.mkd-backup").exists());
+}
+
+#[test]
+fn removing_an_uninstalled_profile_is_non_terminal_safe_and_idempotent() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join("missing-profile");
+
+    Command::cargo_bin("mkd")
+        .unwrap()
+        .env("MKD_SHELL_PROFILE", &profile)
+        .args(["setup", "bash", "--remove"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no change needed"));
+
+    assert!(!profile.exists());
+}
+
+#[test]
+fn setup_refuses_non_terminal_modification_without_yes() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join("profile");
+    let original = b"user content\n";
+    fs::write(&profile, original).unwrap();
+
+    Command::cargo_bin("mkd")
+        .unwrap()
+        .env("MKD_SHELL_PROFILE", &profile)
+        .args(["setup", "zsh"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--yes"));
+
+    assert_eq!(fs::read(&profile).unwrap(), original);
+    assert!(!temp.path().join("profile.mkd-backup").exists());
+}
+
+#[test]
+fn yes_does_not_bypass_malformed_block_checks() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join("profile");
+    let original = format!("user content\n{BLOCK_START}\n");
+    fs::write(&profile, original.as_bytes()).unwrap();
+
+    Command::cargo_bin("mkd")
+        .unwrap()
+        .env("MKD_SHELL_PROFILE", &profile)
+        .args(["setup", "bash", "--yes"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("malformed"));
+
+    assert_eq!(fs::read(&profile).unwrap(), original.as_bytes());
+}
 
 #[test]
 fn bash_init_has_complete_routing_and_failure_guards() {

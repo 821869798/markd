@@ -1,3 +1,5 @@
+use std::fmt;
+
 use clap::ValueEnum;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -6,6 +8,18 @@ pub enum Shell {
     Zsh,
     Fish,
     Powershell,
+}
+
+impl fmt::Display for Shell {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::Bash => "bash",
+            Self::Zsh => "zsh",
+            Self::Fish => "fish",
+            Self::Powershell => "powershell",
+        };
+        formatter.write_str(name)
+    }
 }
 
 pub fn init_script(shell: Shell) -> &'static str {

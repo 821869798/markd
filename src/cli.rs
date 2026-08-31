@@ -1,11 +1,12 @@
 use std::env;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
 use clap::{Args, Parser, Subcommand};
 
 use crate::paths;
+use crate::setup::{self, SetupRequest, SystemEnvironment};
 use crate::shell;
 use crate::store::Store;
 
@@ -67,7 +68,19 @@ pub enum CategoryCommand {
 }
 
 #[derive(Debug, Args)]
-pub struct SetupArgs {}
+pub struct SetupArgs {
+    /// Shell to configure; detected when omitted.
+    pub shell: Option<Shell>,
+    /// Remove mkd's managed initialization block.
+    #[arg(long)]
+    pub remove: bool,
+    /// Print the planned change without writing files.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Apply the change without prompting.
+    #[arg(long)]
+    pub yes: bool,
+}
 
 impl Cli {
     pub fn run(self) -> Result<()> {
@@ -87,11 +100,53 @@ impl Cli {
                 output.write_all(shell::init_script(shell).as_bytes())?;
                 Ok(())
             }
-            Some(Command::Setup(_)) => Err(anyhow!("shell setup is not available yet")),
+            Some(Command::Setup(arguments)) => setup_shell(arguments),
             Some(Command::Select) => Err(anyhow!("interactive selection is not available yet")),
             None => Err(anyhow!("interactive interface is not available yet")),
         }
     }
+}
+
+fn setup_shell(arguments: SetupArgs) -> Result<()> {
+    let request = SetupRequest {
+        shell: arguments.shell,
+        remove: arguments.remove,
+        dry_run: arguments.dry_run,
+        yes: arguments.yes,
+    };
+    let plan = setup::create_plan(&request, &SystemEnvironment)?;
+
+    println!("Shell: {}", plan.shell);
+    println!("Profile: {}", plan.profile.display());
+    println!("Action: {}", plan.action.description());
+
+    if request.dry_run {
+        println!("Managed block:\n{}", plan.rendered_block);
+        return Ok(());
+    }
+    if !plan.action.changes_profile() {
+        return Ok(());
+    }
+
+    if !request.yes {
+        let stdin = io::stdin();
+        if !stdin.is_terminal() {
+            return Err(anyhow!(
+                "refusing to modify a shell profile with non-terminal stdin; pass --yes to confirm"
+            ));
+        }
+        eprint!("Apply this change? [y/N] ");
+        io::stderr().flush()?;
+        let mut answer = String::new();
+        stdin.read_line(&mut answer)?;
+        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            eprintln!("No changes made.");
+            return Ok(());
+        }
+    }
+
+    plan.apply()?;
+    Ok(())
 }
 
 fn add(path: Option<PathBuf>, name: Option<String>, category: Option<String>) -> Result<()> {
