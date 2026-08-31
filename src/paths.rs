@@ -49,7 +49,7 @@ pub fn normalize_directory_from(input: &Path, base: &Path) -> Result<PathBuf, Pa
 pub fn default_data_file() -> Result<PathBuf, PathError> {
     let project_dirs =
         ProjectDirs::from("", "", "mkd").ok_or(PathError::DataDirectoryUnavailable)?;
-    Ok(project_dirs.data_dir().join("bookmarks.json"))
+    Ok(project_dirs.data_local_dir().join("bookmarks.json"))
 }
 
 fn expand_home(input: &Path) -> Result<PathBuf, PathError> {
@@ -83,7 +83,15 @@ fn dirs_home() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use directories::ProjectDirs;
     use std::path::Path;
+
+    #[test]
+    fn default_data_file_uses_local_data_directory() {
+        let project_dirs = ProjectDirs::from("", "", "mkd").unwrap();
+        let expected = project_dirs.data_local_dir().join("bookmarks.json");
+        assert_eq!(super::default_data_file().unwrap(), expected);
+    }
 
     #[test]
     fn normalize_relative_directory_to_absolute_path() {
