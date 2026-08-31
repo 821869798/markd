@@ -5,3 +5,4 @@ pub mod query;
 pub mod setup;
 pub mod shell;
 pub mod store;
+pub mod ui;
