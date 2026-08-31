@@ -366,6 +366,11 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, SetupError> {
 }
 
 fn replace_profile(path: &Path, original: Option<&[u8]>, updated: &[u8]) -> Result<(), SetupError> {
+    let path = if original.is_some() {
+        fs::canonicalize(path).map_err(|source| io_error("resolve profile", path, source))?
+    } else {
+        path.to_path_buf()
+    };
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -377,8 +382,8 @@ fn replace_profile(path: &Path, original: Option<&[u8]>, updated: &[u8]) -> Resu
 
     let original_permissions = if original.is_some() {
         Some(
-            fs::metadata(path)
-                .map_err(|source| io_error("read profile metadata", path, source))?
+            fs::metadata(&path)
+                .map_err(|source| io_error("read profile metadata", &path, source))?
                 .permissions(),
         )
     } else {
@@ -386,12 +391,13 @@ fn replace_profile(path: &Path, original: Option<&[u8]>, updated: &[u8]) -> Resu
     };
 
     if let Some(original) = original {
-        let current = fs::read(path).map_err(|source| io_error("re-read profile", path, source))?;
+        let current =
+            fs::read(&path).map_err(|source| io_error("re-read profile", &path, source))?;
         if current != original {
             return Err(SetupError::ConcurrentChange(path.to_path_buf()));
         }
-        let backup = backup_path(path);
-        fs::copy(path, &backup)
+        let backup = backup_path(&path);
+        fs::copy(&path, &backup)
             .map_err(|source| io_error("back up profile to", &backup, source))?;
         let backup_file = OpenOptions::new()
             .write(true)
@@ -407,7 +413,7 @@ fn replace_profile(path: &Path, original: Option<&[u8]>, updated: &[u8]) -> Resu
         }
     }
 
-    let (temporary_path, mut temporary_file) = create_temporary_file(parent, path)?;
+    let (temporary_path, mut temporary_file) = create_temporary_file(parent, &path)?;
     let write_result = (|| {
         temporary_file
             .write_all(updated)
@@ -428,8 +434,8 @@ fn replace_profile(path: &Path, original: Option<&[u8]>, updated: &[u8]) -> Resu
         drop(temporary_file);
         match original {
             Some(expected) => {
-                let current = fs::read(path).map_err(|source| {
-                    io_error("re-read profile before replacement", path, source)
+                let current = fs::read(&path).map_err(|source| {
+                    io_error("re-read profile before replacement", &path, source)
                 })?;
                 if current != expected {
                     return Err(SetupError::ConcurrentChange(path.to_path_buf()));
@@ -440,8 +446,8 @@ fn replace_profile(path: &Path, original: Option<&[u8]>, updated: &[u8]) -> Resu
             }
             None => {}
         }
-        fs::rename(&temporary_path, path)
-            .map_err(|source| io_error("replace profile", path, source))?;
+        fs::rename(&temporary_path, &path)
+            .map_err(|source| io_error("replace profile", &path, source))?;
         Ok(())
     })();
     if write_result.is_err() {

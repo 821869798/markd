@@ -147,6 +147,39 @@ fn setup_cli_installs_and_updates_the_exact_override_profile() {
     assert_eq!(fs::read(&profile).unwrap(), first);
 }
 
+#[cfg(unix)]
+#[test]
+fn setup_preserves_symlink_profile_and_updates_its_target() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path().join("dotfiles-zshrc");
+    let profile = temp.path().join(".zshrc");
+    fs::write(&target, b"user content\n").unwrap();
+    symlink(&target, &profile).unwrap();
+
+    Command::cargo_bin("mkd")
+        .unwrap()
+        .env("MKD_SHELL_PROFILE", &profile)
+        .args(["setup", "zsh", "--yes"])
+        .assert()
+        .success();
+
+    let link_target = fs::read_link(&profile).unwrap();
+    assert_eq!(link_target, target);
+    assert!(
+        fs::symlink_metadata(&profile)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(String::from_utf8_lossy(&fs::read(&target).unwrap()).contains(BLOCK_START));
+    assert_eq!(
+        fs::read(target.with_file_name("dotfiles-zshrc.mkd-backup")).unwrap(),
+        b"user content\n"
+    );
+}
+
 #[test]
 fn setup_dry_run_previews_without_creating_any_paths() {
     let temp = tempfile::tempdir().unwrap();
