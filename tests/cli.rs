@@ -271,7 +271,7 @@ fn unavailable_interactive_entries_fail_without_stdout_or_panic() {
             "interactive interface is not available",
         ));
     mkd(&data)
-        .arg("select")
+        .arg("__select")
         .assert()
         .failure()
         .stdout(predicate::str::is_empty())

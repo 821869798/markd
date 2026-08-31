@@ -3,10 +3,13 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
 
 use crate::paths;
+use crate::shell;
 use crate::store::Store;
+
+pub use crate::shell::Shell;
 
 #[derive(Debug, Parser)]
 #[command(name = "mkd", version, about = "Manage directory bookmarks")]
@@ -47,7 +50,7 @@ pub enum Command {
     Init { shell: Shell },
     /// Configure shell integration.
     Setup(SetupArgs),
-    #[command(hide = true)]
+    #[command(name = "__select", hide = true)]
     Select,
 }
 
@@ -61,14 +64,6 @@ pub enum CategoryCommand {
     Remove { name: String },
     /// Rename a category and update its bookmarks.
     Rename { old: String, new: String },
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum Shell {
-    Bash,
-    Zsh,
-    Fish,
-    PowerShell,
 }
 
 #[derive(Debug, Args)]
@@ -86,7 +81,12 @@ impl Cli {
             Some(Command::Remove { bookmark }) => remove(&bookmark),
             Some(Command::Rename { bookmark, name }) => rename(&bookmark, &name),
             Some(Command::Category { command }) => category(command),
-            Some(Command::Init { .. }) => Err(anyhow!("shell initialization is not available yet")),
+            Some(Command::Init { shell }) => {
+                let stdout = io::stdout();
+                let mut output = stdout.lock();
+                output.write_all(shell::init_script(shell).as_bytes())?;
+                Ok(())
+            }
             Some(Command::Setup(_)) => Err(anyhow!("shell setup is not available yet")),
             Some(Command::Select) => Err(anyhow!("interactive selection is not available yet")),
             None => Err(anyhow!("interactive interface is not available yet")),
