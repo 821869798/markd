@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# asdf/mise plugin: list available versions from GitHub releases.
+if command -v curl >/dev/null 2>&1; then
+  fetch() { curl -fsSL "$1"; }
+else
+  fetch() { wget -q -O - "$1"; }
+fi
+fetch 'https://api.github.com/repos/821869798/markd/releases?per_page=100' \
+  | grep -o '"tag_name": *"v[^"]*"' \
+  | sed 's/.*"v\([^"]*\)".*/\1/' \
+  | sort -rV

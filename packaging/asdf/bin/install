@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# asdf/mise plugin: mkd — directory bookmark manager (https://github.com/821869798/markd)
+set -euo pipefail
+
+if [ "${ASDF_INSTALL_TYPE:-version}" != "version" ]; then
+  echo "Binary releases only: install_type=${ASDF_INSTALL_TYPE}" >&2
+  exit 1
+fi
+
+fail() {
+  echo "mkd install failed: $*" >&2
+  exit 1
+}
+
+download() {
+  local url="$1" dest="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" -o "$dest"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q "$url" -O "$dest"
+  else
+    fail "need curl or wget"
+  fi
+}
+
+install_mk() {
+  local version="$1" download_dir="$2" install_path="$3"
+
+  # Map OS/arch onto the release archive names.
+  local os arch archive ext archive_name extract_dir
+  case "$(uname -s)" in
+    Linux) os=linux ;;
+    Darwin) os=darwin ;;
+    *) fail "unsupported OS: $(uname -s)" ;;
+  esac
+  case "$(uname -m)" in
+    x86_64 | amd64) arch=x86_64 ;;
+    aarch64 | arm64) arch=aarch64 ;;
+    *) fail "unsupported arch: $(uname -m)" ;;
+  esac
+
+  if [ "$os" = "darwin" ]; then
+    archive=mkd-${arch}-apple-darwin
+    ext=tar.gz
+  else
+    archive=mkd-${arch}-unknown-linux-gnu
+    ext=tar.gz
+  fi
+  archive_name="${archive}.${ext}"
+
+  local url="https://github.com/821869798/markd/releases/download/v${version}/${archive_name}"
+  local tarball="${download_dir}/${archive_name}"
+  download "$url" "$tarball"
+
+  # tar.gz archives contain a top-level directory mkd-<target>/.
+  extract_dir="${download_dir}/extract"
+  mkdir -p "$extract_dir"
+  tar -xzf "$tarball" -C "$extract_dir"
+
+  mkdir -p "${install_path}/bin"
+  mv "${extract_dir}"/mkd-*/mkd "${install_path}/bin/mkd"
+  chmod +x "${install_path}/bin/mkd"
+
+  echo "mkd v${version} installed to ${install_path}/bin/mkd" >&2
+}
+
+install_mk "$ASDF_INSTALL_VERSION" "${ASDF_DOWNLOAD_PATH:-$(mktemp -d)}" "$ASDF_INSTALL_PATH"

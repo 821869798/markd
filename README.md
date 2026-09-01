@@ -15,7 +15,31 @@
 
 ### Install
 
-**Option 1: Download a prebuilt binary (recommended)**
+**Option 1: Package managers**
+
+```console
+# mise (recommended, all platforms)
+mise use -g mkd@latest
+
+# Homebrew (macOS / Linux ARM64)
+brew install 821869798/mkd/mkd
+
+# Scoop (Windows)
+scoop bucket add 821869798 https://github.com/821869798/scoop-bucket
+scoop install mkd
+
+# asdf
+asdf plugin add mkd https://github.com/821869798/asdf-mkd.git
+asdf install mkd latest
+```
+
+**Option 2: One-line installer (Linux/macOS)**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/821869798/markd/master/packaging/install.sh | sh
+```
+
+**Option 3: Download a prebuilt binary**
 
 Grab the archive for your platform from the [Releases page](https://github.com/821869798/markd/releases), extract it, and put `mkd` (or `mkd.exe`) somewhere on your `PATH`:
 
@@ -38,7 +62,7 @@ sudo mv mkd-*/mkd /usr/local/bin/
 mkd --version
 ```
 
-**Option 2: Install from source with Cargo**
+**Option 4: Install from source with Cargo**
 
 With the Rust toolchain installed, from the source directory:
 

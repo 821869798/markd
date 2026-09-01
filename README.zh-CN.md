@@ -15,7 +15,31 @@
 
 ### 安装
 
-**方式一：下载预编译二进制（推荐）**
+**方式一：包管理器**
+
+```console
+# mise（推荐，全平台）
+mise use -g mkd@latest
+
+# Homebrew（macOS / Linux ARM64）
+brew install 821869798/mkd/mkd
+
+# Scoop（Windows）
+scoop bucket add 821869798 https://github.com/821869798/scoop-bucket
+scoop install mkd
+
+# asdf
+asdf plugin add mkd https://github.com/821869798/asdf-mkd.git
+asdf install mkd latest
+```
+
+**方式二：一键安装脚本（Linux/macOS）**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/821869798/markd/master/packaging/install.sh | sh
+```
+
+**方式三：下载预编译二进制**
 
 从 [Releases 页面](https://github.com/821869798/markd/releases) 下载对应平台的压缩包，解压后把 `mkd`（或 `mkd.exe`）放进 `PATH` 里的任意目录：
 
@@ -38,7 +62,7 @@ sudo mv mkd-*/mkd /usr/local/bin/
 mkd --version
 ```
 
-**方式二：源码编译安装**
+**方式四：源码编译安装**
 
 需要已安装 Rust 工具链。进入源码目录后运行：
 
