@@ -265,7 +265,16 @@ fn rename_and_remove_bookmark() {
         .arg("list")
         .assert()
         .success()
-        .stdout(predicate::str::contains("new").and(predicate::str::contains("old").not()))
+        // Match on the name column only; the path column is a tempdir whose
+        // value differs from the stored name checks on macOS (/private prefix).
+        .stdout(predicate::function(|stdout: &str| {
+            stdout
+                .lines()
+                .any(|line| line.split('\t').next() == Some("new"))
+                && stdout
+                    .lines()
+                    .all(|line| line.split('\t').next() != Some("old"))
+        }))
         .stderr(predicate::str::is_empty());
 
     mkd(&data)
