@@ -43,6 +43,7 @@ pub enum Action {
     BeginCreateCategory,
     BeginRenameCategory,
     BeginMoveBookmark,
+    CopySelectedPath,
     ClickBookmark {
         row: usize,
         button: ClickButton,
@@ -137,6 +138,7 @@ pub struct App {
     edit_text: String,
     pending_delete: Option<PendingDelete>,
     last_mutation: Option<Mutation>,
+    pending_copy: Option<String>,
 }
 
 impl App {
@@ -168,6 +170,7 @@ impl App {
             edit_text: String::new(),
             pending_delete: None,
             last_mutation: None,
+            pending_copy: None,
         };
         app.refresh(now, None);
         app
@@ -243,6 +246,15 @@ impl App {
                     self.status_message = Some("再次按 d 确认删除，按 Esc 取消".to_owned());
                 } else {
                     self.status_message = Some("没有可删除的书签".to_owned());
+                }
+                Outcome::Continue
+            }
+            Action::CopySelectedPath => {
+                if let Some(row) = self.selected_row() {
+                    self.pending_copy = Some(row.path.display().to_string());
+                    self.status_message = Some("路径已复制到剪贴板".to_owned());
+                } else {
+                    self.status_message = Some("没有可复制的书签".to_owned());
                 }
                 Outcome::Continue
             }
@@ -620,6 +632,19 @@ impl App {
         self.selected_bookmark
             .and_then(|index| self.visible_bookmarks.get(index))
             .map(|bookmark| bookmark.id)
+    }
+
+    fn selected_row(&self) -> Option<&BookmarkRow> {
+        self.selected_bookmark
+            .and_then(|index| self.visible_bookmarks.get(index))
+    }
+
+    pub(crate) fn take_pending_copy(&mut self) -> Option<String> {
+        self.pending_copy.take()
+    }
+
+    pub(crate) fn set_copy_failed(&mut self) {
+        self.status_message = Some("复制失败：未找到可用的剪贴板工具".to_owned());
     }
 
     fn rebuild_categories(&mut self) {

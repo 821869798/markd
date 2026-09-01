@@ -76,7 +76,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     render_bookmarks(frame, app, layout);
 
     let footer = app.status_message().map_or_else(
-        || "↑/↓ 或 j/k 移动  Tab 切换  / 搜索  Enter 选择  Esc 退出".to_owned(),
+        || "↑/↓ 或 j/k 移动  Tab 切换  / 搜索  Enter 跳转  y 复制路径  Esc 退出".to_owned(),
         |message| format!("错误: {message}"),
     );
     let footer_style = if app.status_message().is_some() {

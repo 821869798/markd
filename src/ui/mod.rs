@@ -71,6 +71,11 @@ where
                     if let Some(mutation) = app.take_mutation() {
                         reconcile_persistence(&mut app, before, persist(&mutation), Utc::now());
                     }
+                    if let Some(path) = app.take_pending_copy()
+                        && copy_to_clipboard(&path).is_err()
+                    {
+                        app.set_copy_failed();
+                    }
                 }
                 finished => break finished,
             }
@@ -95,6 +100,45 @@ pub fn run(database: Database) -> Result<Outcome, UiError> {
         current = updated;
         Ok(current.clone())
     })
+}
+
+/// Copies text to the system clipboard using the platform's built-in utility.
+/// No new dependencies: Windows uses `clip.exe`, macOS uses `pbcopy`, and
+/// Linux tries `wl-copy` then `xclip`.
+fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    #[cfg(windows)]
+    let programs: &[&str] = &["clip"];
+    #[cfg(target_os = "macos")]
+    let programs: &[&str] = &["pbcopy"];
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let programs: &[&str] = &["wl-copy", "xclip"];
+
+    let mut last_error =
+        std::io::Error::new(std::io::ErrorKind::NotFound, "no clipboard utility found");
+    for program in programs {
+        match Command::new(program)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(mut child) => {
+                if let Some(stdin) = child.stdin.as_mut() {
+                    stdin.write_all(text.as_bytes())?;
+                }
+                let status = child.wait()?;
+                if status.success() {
+                    return Ok(());
+                }
+                last_error = std::io::Error::other(format!("{program} exited with {status}"));
+            }
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
 }
 
 fn reconcile_persistence(
@@ -165,6 +209,7 @@ pub(crate) fn map_key_event(event: KeyEvent, searching: bool) -> Option<Action> 
         KeyCode::Char('r') if !searching && plain_or_shift => Some(Action::BeginRenameCategory),
         KeyCode::Char('D') if !searching && plain_or_shift => Some(Action::DeleteCategory),
         KeyCode::Char('m') if !searching && plain_or_shift => Some(Action::BeginMoveBookmark),
+        KeyCode::Char('y') if !searching && plain_or_shift => Some(Action::CopySelectedPath),
         _ => None,
     }
 }
@@ -355,7 +400,7 @@ mod tests {
         map_key_event, mouse_action, reconcile_persistence,
     };
     use crate::model::{Bookmark, Database};
-    use crate::ui::app::{Action, App, ClickButton};
+    use crate::ui::app::{Action, App, ClickButton, Outcome};
     use crate::ui::view::layout_for;
     use chrono::{TimeZone, Utc};
     use crossterm::event::{
@@ -529,6 +574,32 @@ mod tests {
         assert_eq!(key(KeyCode::Char('/'), true), Some(Action::Input('/')));
         assert_eq!(key(KeyCode::Backspace, true), Some(Action::Backspace));
         assert_eq!(key(KeyCode::Backspace, false), None);
+        assert_eq!(
+            key(KeyCode::Char('y'), false),
+            Some(Action::CopySelectedPath)
+        );
+        assert_eq!(key(KeyCode::Char('y'), true), Some(Action::Input('y')));
+    }
+
+    #[test]
+    fn copy_action_marks_selected_path_and_reports_it() {
+        let mut app = fixture_app(2);
+        app.handle(Action::Down, test_now());
+        let outcome = app.handle(Action::CopySelectedPath, test_now());
+        assert_eq!(outcome, Outcome::Continue);
+        let path = app.take_pending_copy().expect("copy request queued");
+        assert_eq!(path, "missing-1");
+        assert_eq!(app.status_message(), Some("路径已复制到剪贴板"));
+        assert!(app.take_pending_copy().is_none());
+    }
+
+    #[test]
+    fn copy_action_without_selection_is_a_no_op_message() {
+        let mut app = App::from_database(Database::default());
+        let outcome = app.handle(Action::CopySelectedPath, test_now());
+        assert_eq!(outcome, Outcome::Continue);
+        assert!(app.take_pending_copy().is_none());
+        assert_eq!(app.status_message(), Some("没有可复制的书签"));
     }
 
     #[test]
