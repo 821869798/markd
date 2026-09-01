@@ -18,9 +18,6 @@
 **Option 1: Package managers**
 
 ```console
-# mise (recommended, all platforms)
-mise use -g mkd@latest
-
 # Homebrew (macOS / Linux ARM64)
 brew install 821869798/mkd/mkd
 
@@ -31,6 +28,11 @@ scoop install mkd
 # asdf
 asdf plugin add mkd https://github.com/821869798/asdf-mkd.git
 asdf install mkd latest
+
+# mise: use the asdf plugin by full name until registry PR lands
+mise use -g asdf:821869798/asdf-mkd
+# After the registry PR is merged, the short name also works:
+# mise use -g mkd@latest
 ```
 
 **Option 2: One-line installer (Linux/macOS)**
@@ -38,6 +40,8 @@ asdf install mkd latest
 ```bash
 curl -fsSL https://raw.githubusercontent.com/821869798/markd/master/packaging/install.sh | sh
 ```
+
+Installs to `~/.local/bin` by default (override with `DEST=...`).
 
 **Option 3: Download a prebuilt binary**
 

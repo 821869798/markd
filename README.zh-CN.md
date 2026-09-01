@@ -18,9 +18,6 @@
 **方式一：包管理器**
 
 ```console
-# mise（推荐，全平台）
-mise use -g mkd@latest
-
 # Homebrew（macOS / Linux ARM64）
 brew install 821869798/mkd/mkd
 
@@ -31,6 +28,11 @@ scoop install mkd
 # asdf
 asdf plugin add mkd https://github.com/821869798/asdf-mkd.git
 asdf install mkd latest
+
+# mise：registry 合并前用 asdf 插件全名
+mise use -g asdf:821869798/asdf-mkd
+# registry PR 合并后短名可用：
+# mise use -g mkd@latest
 ```
 
 **方式二：一键安装脚本（Linux/macOS）**
@@ -38,6 +40,8 @@ asdf install mkd latest
 ```bash
 curl -fsSL https://raw.githubusercontent.com/821869798/markd/master/packaging/install.sh | sh
 ```
+
+默认安装到 `~/.local/bin`（可用 `DEST=...` 覆盖）。
 
 **方式三：下载预编译二进制**
 

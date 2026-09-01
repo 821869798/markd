@@ -69,19 +69,22 @@ jobs:
         shell: pwsh
         run: |
           $name = "mkd-${{ matrix.target }}"
-          New-Item -ItemType Directory -Path $name -Force
-          Copy-Item "target/${{ matrix.target }}/release/mkd.exe" $name/
-          Copy-Item README.md, LICENSE $name/
-          Compress-Archive -Path $name -DestinationPath "$name.zip"
+          $staging = "pkg-stage"
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/mkd.exe" $staging/
+          Copy-Item README.md, LICENSE $staging/
+          # Flat zip: scoop extracts mkd.exe at the root, so "bin": "mkd.exe" works.
+          Compress-Archive -Path "$staging/*" -DestinationPath "$name.zip"
 
       - name: Package (tar.gz)
         if: matrix.archive == 'tar.gz'
         run: |
           name="mkd-${{ matrix.target }}"
-          mkdir "$name"
-          cp "target/${{ matrix.target }}/release/mkd" "$name/"
-          cp README.md LICENSE "$name/"
-          tar -czf "$name.tar.gz" "$name"
+          staging="$(mktemp -d)/$name"
+          mkdir -p "$staging"
+          cp "target/${{ matrix.target }}/release/mkd" "$staging/"
+          cp README.md LICENSE "$staging/"
+          (cd "$(dirname "$staging")" && tar -czf "$GITHUB_WORKSPACE/$name.tar.gz" "$name")
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
