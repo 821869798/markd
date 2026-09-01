@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 
 use super::app::{App, Pane};
 
@@ -83,7 +83,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
             "搜索中: 输入文字过滤  Enter 跳转  Esc 退出搜索（管理操作需先退搜索）".to_owned()
         }
         None => {
-            "↑/↓ 或 j/k 移动  Tab 切栏  / 搜索  a 加目录  c 新建分组  m 归组  y 复制  Enter 跳转"
+            "↑/↓ 或 j/k 移动  Tab 切栏  / 搜索  a 加目录  c 新建分组  m 归组  y 复制  h 帮助  Enter 跳转"
                 .to_owned()
         }
     };
@@ -102,26 +102,89 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
             popup,
         );
     } else if app.is_editing() {
-        let popup = centered_rect(60, 20, area);
-        let title = app.edit_prompt().unwrap_or("编辑");
-        let hint = match title {
-            "新建分类" => "输入新分类名，回车提交，Esc 取消",
-            "重命名分类" => "输入新名称，回车提交，Esc 取消",
-            "移动到分类" => "输入目标分类名，回车提交，Esc 取消",
-            "添加书签到当前分组" => "输入路径（留空=当前目录），回车提交，Esc 取消",
-            _ => "输入新名称，回车提交，Esc 取消",
-        };
-        let popup_inner = centered_rect(58, 12, popup);
-        frame.render_widget(
-            Paragraph::new(app.edit_text())
-                .block(Block::default().borders(Borders::ALL).title(title)),
-            popup,
-        );
-        frame.render_widget(
-            Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
-            popup_inner,
-        );
+        render_edit_popup(frame, area, app);
+    } else if app.is_help_visible() {
+        render_help_popup(frame, area);
     }
+}
+
+fn render_edit_popup(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    // Fixed 5-row popup: 2 borders + input + blank + hint. Percentages make
+    // short terminals truncate the hint, which confused users.
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(50) / 2,
+        y: area.y + area.height.saturating_sub(5) / 2,
+        width: area.width.min(50),
+        height: area.height.min(5),
+    };
+    frame.render_widget(Clear, popup);
+    let title = app.edit_prompt().unwrap_or("编辑");
+    let hint = match title {
+        "新建分类" => "输入新分类名，回车提交，Esc 取消",
+        "重命名分类" => "输入新名称，回车提交，Esc 取消",
+        "移动到分类" => "输入目标分类名（如 work），回车提交，Esc 取消",
+        "添加书签到当前分组" => "输入路径，留空=当前目录，回车提交，Esc 取消",
+        _ => "输入新名称，回车提交，Esc 取消",
+    };
+
+    let input_line = format!("> {}", app.edit_text());
+    let lines: Vec<Line> = vec![Line::from(input_line), Line::from(""), Line::from(hint)];
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title)),
+        popup,
+    );
+    // Place the cursor right after the typed text so input is visible.
+    let input_x = popup
+        .x
+        .saturating_add(2 + app.edit_text().chars().count() as u16)
+        .min(popup.right().saturating_sub(2));
+    frame.set_cursor_position((input_x, popup.y + 1));
+}
+
+fn render_help_popup(frame: &mut Frame<'_>, area: Rect) {
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(52) / 2,
+        y: area.y + area.height.saturating_sub(26) / 2,
+        width: area.width.min(52),
+        height: area.height.min(26),
+    };
+    frame.render_widget(Clear, popup);
+    let help = vec![
+        "mkd — 目录书签 快捷键",
+        "",
+        "导航",
+        "  j / k / ↑ / ↓       上下移动",
+        "  Tab                  左右栏切换",
+        "  /                    进入搜索（再按 Esc 退出搜索）",
+        "  鼠标单击             选择分类或书签 / 点搜索框进入搜索",
+        "  鼠标双击             直接跳转到书签目录",
+        "",
+        "书签",
+        "  Enter                跳转到选中目录",
+        "  y                    复制选中书签路径到剪贴板",
+        "  a                    添加目录到当前分组（留空=当前目录）",
+        "  e                    重命名书签",
+        "  d → d                删除书签（按两次确认）",
+        "  m                    移动书签到其他分组",
+        "",
+        "分组（分类）",
+        "  c                    新建分组",
+        "  r                    重命名分组（选中分组后）",
+        "  D → D                删除分组（书签归回 default）",
+        "",
+        "其他",
+        "  h                    显示/关闭此帮助",
+        "  Esc                  取消当前操作 / 退出",
+    ];
+    let help_lines: Vec<Line> = help.into_iter().map(Line::from).collect();
+    frame.render_widget(
+        Paragraph::new(help_lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("帮助 (h 关闭)"),
+        ),
+        popup,
+    );
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -263,6 +326,39 @@ mod tests {
         let mut app = App::from_database_at(Database::default(), test_now());
         let buffer = render_to_string(&mut app, 80, 16);
         assert!(buffer.contains("还没有书签"), "{buffer}");
+    }
+
+    #[test]
+    fn help_overlay_opens_and_closes_and_shows_shortcuts() {
+        let mut app = App::from_database_at(Database::default(), test_now());
+        app.handle(Action::ToggleHelp, test_now());
+        let buffer = render_to_string(&mut app, 100, 30);
+        assert!(buffer.contains("快捷键"), "{buffer}");
+        assert!(buffer.contains("复制选中书签路径"), "{buffer}");
+        app.handle(Action::ToggleHelp, test_now());
+        let closed = render_to_string(&mut app, 100, 30);
+        assert!(!closed.contains("快捷键"), "{closed}");
+    }
+
+    #[test]
+    fn help_overlay_esc_closes_and_other_actions_are_locked() {
+        let mut app = App::from_database_at(Database::default(), test_now());
+        app.handle(Action::ToggleHelp, test_now());
+        // While help is open, other actions must not leak through.
+        app.handle(Action::StartSearch, test_now());
+        assert!(!app.is_searching());
+        app.handle(Action::Cancel, test_now());
+        assert!(!app.is_help_visible());
+    }
+
+    #[test]
+    fn edit_popup_shows_input_marker_and_hint() {
+        let mut app = App::from_database_at(Database::default(), test_now());
+        app.handle(Action::BeginCreateCategory, test_now());
+        app.handle(Action::Input('w'), test_now());
+        let buffer = render_to_string(&mut app, 80, 24);
+        assert!(buffer.contains(">w"), "{buffer}");
+        assert!(buffer.contains("输入新分类名"), "{buffer}");
     }
 
     #[test]

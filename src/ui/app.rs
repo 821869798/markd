@@ -47,6 +47,7 @@ pub enum Action {
     BeginAddBookmark,
     AddBookmark(String),
     CopySelectedPath,
+    ToggleHelp,
     ClickBookmark {
         row: usize,
         button: ClickButton,
@@ -147,6 +148,7 @@ pub struct App {
     pending_delete: Option<PendingDelete>,
     last_mutation: Option<Mutation>,
     pending_copy: Option<String>,
+    help_visible: bool,
 }
 
 impl App {
@@ -179,6 +181,7 @@ impl App {
             pending_delete: None,
             last_mutation: None,
             pending_copy: None,
+            help_visible: false,
         };
         app.refresh(now, None);
         app
@@ -186,6 +189,16 @@ impl App {
 
     pub fn handle(&mut self, action: Action, now: DateTime<Utc>) -> Outcome {
         self.last_mutation = None;
+        if self.help_visible {
+            // While the help overlay is open only these actions are accepted.
+            return match action {
+                Action::ToggleHelp | Action::Cancel => {
+                    self.help_visible = false;
+                    Outcome::Continue
+                }
+                _ => Outcome::Continue,
+            };
+        }
         if self.pending_delete.is_some()
             && !matches!(action, Action::ConfirmDelete(_) | Action::Cancel)
         {
@@ -264,6 +277,10 @@ impl App {
                 } else {
                     self.status_message = Some("没有可复制的书签".to_owned());
                 }
+                Outcome::Continue
+            }
+            Action::ToggleHelp => {
+                self.help_visible = !self.help_visible;
                 Outcome::Continue
             }
             Action::ConfirmDelete(confirm) => {
@@ -452,6 +469,10 @@ impl App {
 
     pub fn is_confirming_delete(&self) -> bool {
         self.pending_delete.is_some()
+    }
+
+    pub fn is_help_visible(&self) -> bool {
+        self.help_visible
     }
 
     #[cfg(test)]
