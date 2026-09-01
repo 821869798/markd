@@ -307,9 +307,27 @@ pub fn run_select_with<U: UiRunner>(
         )
     })?;
     paths::validate_path(&path)?;
+    let path = strip_verbatim_prefix(path);
     latest.record_visit(id, now)?;
     store.save(&latest)?;
     Ok(format!("{}\n", path.display()))
+}
+
+#[cfg(windows)]
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{}", stripped))
+    } else if let Some(stripped) = text.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped.to_string())
+    } else {
+        path
+    }
+}
+
+#[cfg(not(windows))]
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    path
 }
 
 fn store() -> Result<Store> {

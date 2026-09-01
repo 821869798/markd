@@ -25,7 +25,10 @@ fn selection_transaction_outputs_absolute_path_and_records_visit() {
     let output = run_select_with(&store, FakeUi(Some(id)), now).unwrap();
     assert_eq!(
         output,
-        format!("{}\n", temp.path().canonicalize().unwrap().display())
+        format!(
+            "{}\n",
+            strip_verbatim(temp.path().canonicalize().unwrap()).display()
+        )
     );
     let saved = store.load().unwrap();
     assert_eq!(saved.bookmarks[0].visit_count, 1);
@@ -159,8 +162,19 @@ fn add_without_path_uses_current_directory() {
     assert_eq!(stored["bookmarks"][0]["name"], "here");
     assert_eq!(
         Path::new(stored["bookmarks"][0]["path"].as_str().unwrap()),
-        temp.path().canonicalize().unwrap()
+        strip_verbatim(temp.path().canonicalize().unwrap())
     );
+}
+
+fn strip_verbatim(path: std::path::PathBuf) -> std::path::PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
+        std::path::PathBuf::from(format!(r"\\{}", stripped))
+    } else if let Some(stripped) = text.strip_prefix(r"\\?\") {
+        std::path::PathBuf::from(stripped.to_string())
+    } else {
+        path
+    }
 }
 
 #[test]

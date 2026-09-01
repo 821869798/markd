@@ -53,10 +53,25 @@ fn normalize_directory_from_with_home(
             source,
         })?;
     validate_path(&canonical)?;
+    let canonical = strip_verbatim_prefix(canonical);
     if !canonical.is_dir() {
         return Err(PathError::NotDirectory(canonical));
     }
     Ok(canonical)
+}
+
+/// Remove the Windows verbatim prefix (`\\?\`) that `canonicalize` produces.
+/// Verbatim paths break `Set-Location`, `Get-ChildItem`, and other PowerShell
+/// cmdlets, so every stored and emitted path uses the ordinary drive form.
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{}", stripped))
+    } else if let Some(stripped) = text.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped.to_string())
+    } else {
+        path
+    }
 }
 
 pub fn validate_path(path: &Path) -> Result<(), PathError> {
@@ -103,7 +118,7 @@ fn dirs_home() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use directories::ProjectDirs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn default_data_file_uses_local_data_directory() {
@@ -116,7 +131,41 @@ mod tests {
     fn normalize_relative_directory_to_absolute_path() {
         let temp = tempfile::tempdir().unwrap();
         let result = super::normalize_directory_from(Path::new("."), temp.path()).unwrap();
-        assert_eq!(result, temp.path().canonicalize().unwrap());
+        assert_eq!(
+            result,
+            super::strip_verbatim_prefix(temp.path().canonicalize().unwrap())
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalized_paths_never_carry_a_verbatim_prefix() {
+        let temp = tempfile::tempdir().unwrap();
+        let result = super::normalize_directory_from(Path::new("."), temp.path()).unwrap();
+        let text = result.to_string_lossy();
+        assert!(!text.starts_with(r"\\?\"));
+        assert_eq!(
+            result,
+            super::strip_verbatim_prefix(temp.path().canonicalize().unwrap())
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verbatim_unc_paths_are_mapped_to_drive_form() {
+        use super::strip_verbatim_prefix;
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\UNC\server\share\dir")),
+            PathBuf::from(r"\\server\share\dir")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\D:\work")),
+            PathBuf::from(r"D:\work")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"D:\already-plain")),
+            PathBuf::from(r"D:\already-plain")
+        );
     }
 
     #[test]
