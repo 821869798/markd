@@ -257,7 +257,24 @@ fn home_directory(
 
 fn query_powershell_profile(environment: &impl Environment) -> Result<PathBuf, SetupError> {
     const ARGS: &[&str] = &["-NoProfile", "-Command", "$PROFILE.CurrentUserCurrentHost"];
-    for program in ["pwsh", "powershell"] {
+    // Prefer the PowerShell edition that is hosting the current session so the
+    // managed block lands in the profile the user's shell will actually load.
+    // `PSModulePath` is inherited by child processes and its first segment is
+    // `Documents\WindowsPowerShell\Modules` for 5.1 and `Documents\PowerShell\Modules`
+    // for 7+.
+    let candidates = match environment
+        .var_os("PSModulePath")
+        .map(|value| value.to_string_lossy().to_ascii_lowercase())
+    {
+        Some(module_path) if module_path.contains("\\windowspowershell\\") => {
+            vec!["powershell", "pwsh"]
+        }
+        Some(module_path) if module_path.contains("\\powershell\\") => {
+            vec!["pwsh", "powershell"]
+        }
+        _ => vec!["pwsh", "powershell"],
+    };
+    for program in candidates {
         let Ok(output) = environment.run(program, ARGS) else {
             continue;
         };
@@ -612,5 +629,51 @@ mod tests {
             }),
         );
         assert_eq!(detect_shell(&environment).unwrap(), Shell::Powershell);
+    }
+
+    #[test]
+    fn windows_powershell_host_query_prefers_the_5_1_profile() {
+        let mut environment = FakeEnvironment::default();
+        environment.variables.insert(
+            "PSModulePath".into(),
+            OsString::from(
+                "C:\\Users\\tester\\Documents\\WindowsPowerShell\\Modules;C:\\Program Files\\WindowsPowerShell\\Modules",
+            ),
+        );
+        environment.commands.insert(
+            "powershell".into(),
+            Ok(CommandOutput {
+                success: true,
+                stdout: b"C:\\Users\\tester\\Documents\\WindowsPowerShell\\Microsoft.PowerShell_profile.ps1\r\n".to_vec(),
+            }),
+        );
+        assert_eq!(
+            locate_profile(Shell::Powershell, &environment).unwrap(),
+            PathBuf::from(
+                r"C:\Users\tester\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1"
+            )
+        );
+    }
+
+    #[test]
+    fn powershell_seven_host_query_prefers_the_pwsh_profile() {
+        let mut environment = FakeEnvironment::default();
+        environment.variables.insert(
+            "PSModulePath".into(),
+            OsString::from(
+                "C:\\Users\\tester\\Documents\\PowerShell\\Modules;C:\\Program Files\\PowerShell\\Modules",
+            ),
+        );
+        environment.commands.insert(
+            "pwsh".into(),
+            Ok(CommandOutput {
+                success: true,
+                stdout: b"C:\\Users\\tester\\Documents\\PowerShell\\Microsoft.PowerShell_profile.ps1\r\n".to_vec(),
+            }),
+        );
+        assert_eq!(
+            locate_profile(Shell::Powershell, &environment).unwrap(),
+            PathBuf::from(r"C:\Users\tester\Documents\PowerShell\Microsoft.PowerShell_profile.ps1")
+        );
     }
 }
