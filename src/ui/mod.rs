@@ -232,6 +232,11 @@ pub(crate) fn mouse_action(
         MouseButton::Middle => ClickButton::Middle,
     };
 
+    // Clicking the search bar focuses search input, like modern TUIs.
+    if row_in(layout.search, event.column, event.row).is_some() {
+        return Some(Action::StartSearch);
+    }
+
     let category_content = layout.category_content();
     if let Some(line) = row_in(category_content, event.column, event.row) {
         let row = app.category_offset().checked_add(line)?;
@@ -600,6 +605,21 @@ mod tests {
         assert_eq!(outcome, Outcome::Continue);
         assert!(app.take_pending_copy().is_none());
         assert_eq!(app.status_message(), Some("没有可复制的书签"));
+    }
+
+    #[test]
+    fn clicking_the_search_bar_focuses_search_input() {
+        let app = fixture_app(3);
+        let layout = layout_for(Rect::new(0, 0, 80, 24));
+        assert_eq!(
+            mouse_action(
+                &app,
+                layout,
+                mouse_down(MouseButton::Left, layout.search.x + 3, layout.search.y + 1),
+                Duration::from_millis(10),
+            ),
+            Some(Action::StartSearch)
+        );
     }
 
     #[test]

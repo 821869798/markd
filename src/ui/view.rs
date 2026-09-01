@@ -8,6 +8,7 @@ use super::app::{App, Pane};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ViewLayout {
+    pub search: Rect,
     pub categories: Rect,
     pub bookmarks: Rect,
 }
@@ -36,6 +37,7 @@ pub(crate) fn layout_for(area: Rect) -> ViewLayout {
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(vertical[1]);
     ViewLayout {
+        search: vertical[0],
         categories: body[0],
         bookmarks: body[1],
     }

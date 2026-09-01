@@ -37,10 +37,10 @@ pub fn query_bookmarks<'a>(
             let fuzzy_score = if query.search.is_empty() {
                 0
             } else {
-                let name_score = matcher.fuzzy_match(&bookmark.name, query.search);
-                let path_score =
-                    matcher.fuzzy_match(&bookmark.path.to_string_lossy(), query.search);
-                name_score.into_iter().chain(path_score).max()?
+                match search_score(&matcher, bookmark, query.search) {
+                    Some(score) => score,
+                    None => return None,
+                }
             };
 
             Some(QueryResult {
@@ -66,6 +66,38 @@ pub fn query_bookmarks<'a>(
             .then_with(|| left.bookmark.path.cmp(&right.bookmark.path))
     });
     results
+}
+
+/// Scores a bookmark against the search text.
+///
+/// Two-tier matching keeps results predictable:
+/// 1. A contiguous substring hit (name or path) scores high and dominates.
+/// 2. A scattered subsequence hit (fzf-style) still matches but with a
+///    heavily discounted score, so typing "asd" no longer floods the list
+///    with every path that merely contains a/s/d somewhere.
+fn search_score(matcher: &SkimMatcherV2, bookmark: &Bookmark, search: &str) -> Option<i64> {
+    let name = bookmark.name.to_lowercase();
+    let path = bookmark.path.to_string_lossy().to_lowercase();
+    let search = search.to_lowercase();
+
+    let substring_hit = name
+        .contains(&search)
+        .then_some(10_000_i64)
+        .or_else(|| path.contains(&search).then_some(9_000_i64));
+    if let Some(base) = substring_hit {
+        let fuzzy = matcher
+            .fuzzy_match(&bookmark.name, &search)
+            .or_else(|| matcher.fuzzy_match(&bookmark.path.to_string_lossy(), &search))
+            .unwrap_or(0);
+        return Some(base + fuzzy.min(1_000));
+    }
+
+    // Scattered subsequence: keep the match but discount it so exact/substring
+    // hits always rank above. Low scattered scores also signal weak matches.
+    matcher
+        .fuzzy_match(&bookmark.name, &search)
+        .or_else(|| matcher.fuzzy_match(&bookmark.path.to_string_lossy(), &search))
+        .map(|score| score / 10)
 }
 
 fn access_score(bookmark: &Bookmark, now: DateTime<Utc>) -> i64 {
@@ -105,6 +137,37 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["Project"]
         );
+    }
+
+    #[test]
+    fn scattered_subsequence_hits_still_match_but_rank_below_substrings() {
+        // "asd" hits "D:\program\rust\markd" only as a scattered
+        // subsequence; it must not outrank a real substring match.
+        let db = Database {
+            version: 1,
+            categories: vec!["default".into()],
+            bookmarks: vec![
+                bookmark("markd", r"D:\program\rust\markd", "default", 0, None),
+                bookmark("notes", r"D:\notes\asd-daily", "default", 0, None),
+            ],
+        };
+        let result = query_bookmarks(
+            &db,
+            Query {
+                category: None,
+                search: "asd",
+            },
+            Utc::now(),
+        );
+        let names: Vec<&str> = result
+            .iter()
+            .map(|result| result.bookmark.name.as_str())
+            .collect();
+        assert!(names.contains(&"notes"));
+        assert!(names.contains(&"markd"));
+        assert_eq!(names.first(), Some(&"notes"));
+        // The substring hit must score far above the scattered one.
+        assert!(result[0].fuzzy_score > result[1].fuzzy_score * 10);
     }
 
     #[test]
