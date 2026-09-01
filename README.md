@@ -17,7 +17,7 @@
 
 **Option 1: Download a prebuilt binary (recommended)**
 
-Grab the archive for your platform from the [Releases page](https://github.com/OWNER/mkd/releases), extract it, and put `mkd` (or `mkd.exe`) somewhere on your `PATH`:
+Grab the archive for your platform from the [Releases page](https://github.com/821869798/markd/releases), extract it, and put `mkd` (or `mkd.exe`) somewhere on your `PATH`:
 
 | Platform | Archive |
 | --- | --- |
@@ -31,7 +31,7 @@ Example (Linux/macOS):
 
 ```bash
 VERSION=v0.1.0
-curl -LO https://github.com/OWNER/mkd/releases/download/$VERSION/mkd-$(uname -m)-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/821869798/markd/releases/download/$VERSION/mkd-$(uname -m)-unknown-linux-gnu.tar.gz
 # macOS: mkd-aarch64-apple-darwin.tar.gz
 tar -xzf mkd-*.tar.gz
 sudo mv mkd-*/mkd /usr/local/bin/

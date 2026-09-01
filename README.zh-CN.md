@@ -17,7 +17,7 @@
 
 **方式一：下载预编译二进制（推荐）**
 
-从 [Releases 页面](https://github.com/OWNER/mkd/releases) 下载对应平台的压缩包，解压后把 `mkd`（或 `mkd.exe`）放进 `PATH` 里的任意目录：
+从 [Releases 页面](https://github.com/821869798/markd/releases) 下载对应平台的压缩包，解压后把 `mkd`（或 `mkd.exe`）放进 `PATH` 里的任意目录：
 
 | 平台 | 压缩包 |
 | --- | --- |
@@ -31,7 +31,7 @@
 
 ```bash
 VERSION=v0.1.0
-curl -LO https://github.com/OWNER/mkd/releases/download/$VERSION/mkd-aarch64-apple-darwin.tar.gz
+curl -LO https://github.com/821869798/markd/releases/download/$VERSION/mkd-aarch64-apple-darwin.tar.gz
 # Linux x64 对应 mkd-x86_64-unknown-linux-gnu.tar.gz
 tar -xzf mkd-*.tar.gz
 sudo mv mkd-*/mkd /usr/local/bin/
