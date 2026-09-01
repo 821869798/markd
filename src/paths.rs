@@ -206,6 +206,12 @@ mod tests {
         symlink(&target, &link).unwrap();
 
         let error = super::normalize_directory_from(&link, temp.path()).unwrap_err();
-        assert!(matches!(error, super::PathError::UnsafeCharacters(path) if path == target));
+        // On macOS the temp dir resolves through /var -> /private/var, so the
+        // reported path may carry a different prefix; match on the tail.
+        assert!(matches!(
+            &error,
+            super::PathError::UnsafeCharacters(path)
+                if path.ends_with("target\nwith-newline")
+        ));
     }
 }
