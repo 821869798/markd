@@ -77,10 +77,14 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     render_categories(frame, app, layout);
     render_bookmarks(frame, app, layout);
 
-    let footer = app.status_message().map_or_else(
-        || "↑/↓ 或 j/k 移动  Tab 切换  / 搜索  Enter 跳转  y 复制路径  Esc 退出".to_owned(),
-        |message| format!("错误: {message}"),
-    );
+    let footer = match app.status_message() {
+        Some(message) => format!("错误: {message}"),
+        None if app.is_searching() => {
+            "搜索中: 输入文字过滤  Enter 跳转  Esc 退出搜索（管理操作需先退搜索）".to_owned()
+        }
+        None => "↑/↓ 或 j/k 移动  Tab 切栏  / 搜索  c 新建分组  m 归组  e 改名  y 复制  Enter 跳转"
+            .to_owned(),
+    };
     let footer_style = if app.status_message().is_some() {
         Style::default().fg(Color::Red)
     } else {
@@ -98,10 +102,21 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     } else if app.is_editing() {
         let popup = centered_rect(60, 20, area);
         let title = app.edit_prompt().unwrap_or("编辑");
+        let hint = match title {
+            "新建分类" => "输入新分类名，回车提交，Esc 取消",
+            "重命名分类" => "输入新名称，回车提交，Esc 取消",
+            "移动到分类" => "输入目标分类名，回车提交，Esc 取消",
+            _ => "输入新名称，回车提交，Esc 取消",
+        };
+        let popup_inner = centered_rect(58, 12, popup);
         frame.render_widget(
             Paragraph::new(app.edit_text())
                 .block(Block::default().borders(Borders::ALL).title(title)),
             popup,
+        );
+        frame.render_widget(
+            Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
+            popup_inner,
         );
     }
 }

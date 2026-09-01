@@ -480,7 +480,14 @@ impl App {
             EditMode::CategoryRename => self.selected_category > 0,
         };
         if !valid {
-            self.status_message = Some("当前选择不支持此操作".to_owned());
+            let hint = match mode {
+                EditMode::BookmarkRename | EditMode::BookmarkMove => {
+                    "先选中一个书签再操作（右侧列表）"
+                }
+                EditMode::CategoryRename => "“全部”是虚拟分类，请先选中左侧一个真实分类",
+                EditMode::CategoryCreate => "无法进入编辑",
+            };
+            self.status_message = Some(hint.to_owned());
             return;
         }
         self.pending_delete = None;
