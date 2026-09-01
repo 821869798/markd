@@ -82,8 +82,10 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
         None if app.is_searching() => {
             "搜索中: 输入文字过滤  Enter 跳转  Esc 退出搜索（管理操作需先退搜索）".to_owned()
         }
-        None => "↑/↓ 或 j/k 移动  Tab 切栏  / 搜索  c 新建分组  m 归组  e 改名  y 复制  Enter 跳转"
-            .to_owned(),
+        None => {
+            "↑/↓ 或 j/k 移动  Tab 切栏  / 搜索  a 加目录  c 新建分组  m 归组  y 复制  Enter 跳转"
+                .to_owned()
+        }
     };
     let footer_style = if app.status_message().is_some() {
         Style::default().fg(Color::Red)
@@ -106,6 +108,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
             "新建分类" => "输入新分类名，回车提交，Esc 取消",
             "重命名分类" => "输入新名称，回车提交，Esc 取消",
             "移动到分类" => "输入目标分类名，回车提交，Esc 取消",
+            "添加书签到当前分组" => "输入路径（留空=当前目录），回车提交，Esc 取消",
             _ => "输入新名称，回车提交，Esc 取消",
         };
         let popup_inner = centered_rect(58, 12, popup);

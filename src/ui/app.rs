@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::model::Database;
+use crate::paths;
 use crate::query::{Query, query_bookmarks};
 
 const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
@@ -43,6 +44,8 @@ pub enum Action {
     BeginCreateCategory,
     BeginRenameCategory,
     BeginMoveBookmark,
+    BeginAddBookmark,
+    AddBookmark(String),
     CopySelectedPath,
     ClickBookmark {
         row: usize,
@@ -83,6 +86,7 @@ enum EditMode {
     CategoryCreate,
     CategoryRename,
     BookmarkMove,
+    AddBookmark,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +113,10 @@ pub(crate) enum Mutation {
         id: Uuid,
         old_category: String,
         new_category: String,
+    },
+    AddBookmark {
+        input: String,
+        category: String,
     },
 }
 
@@ -314,6 +322,15 @@ impl App {
                 self.begin_edit(EditMode::BookmarkMove);
                 Outcome::Continue
             }
+            Action::BeginAddBookmark => {
+                self.begin_edit(EditMode::AddBookmark);
+                Outcome::Continue
+            }
+            Action::AddBookmark(input) => {
+                let category = self.current_category_name();
+                self.last_mutation = Some(Mutation::AddBookmark { input, category });
+                Outcome::Continue
+            }
             Action::ClickBookmark {
                 row,
                 button,
@@ -345,6 +362,19 @@ impl App {
 
     pub fn selected_category(&self) -> usize {
         self.selected_category
+    }
+
+    /// The real category a new bookmark should land in. "全部" is a virtual
+    /// filter, so adds from it fall back to the default category.
+    pub(crate) fn current_category_name(&self) -> String {
+        if self.selected_category == 0 {
+            "default".to_owned()
+        } else {
+            self.categories
+                .get(self.selected_category)
+                .cloned()
+                .unwrap_or_else(|| "default".to_owned())
+        }
     }
 
     pub fn selected_bookmark(&self) -> Option<usize> {
@@ -406,6 +436,7 @@ impl App {
             EditMode::CategoryCreate => "新建分类",
             EditMode::CategoryRename => "重命名分类",
             EditMode::BookmarkMove => "移动到分类",
+            EditMode::AddBookmark => "添加书签到当前分组",
         })
     }
 
@@ -415,6 +446,7 @@ impl App {
             EditMode::CategoryCreate => Action::CreateCategory(self.edit_text.clone()),
             EditMode::CategoryRename => Action::RenameCategory(self.edit_text.clone()),
             EditMode::BookmarkMove => Action::MoveBookmarkToCategory(self.edit_text.clone()),
+            EditMode::AddBookmark => Action::AddBookmark(self.edit_text.clone()),
         })
     }
 
@@ -476,7 +508,7 @@ impl App {
     fn begin_edit(&mut self, mode: EditMode) {
         let valid = match mode {
             EditMode::BookmarkRename | EditMode::BookmarkMove => self.selected_id().is_some(),
-            EditMode::CategoryCreate => true,
+            EditMode::CategoryCreate | EditMode::AddBookmark => true,
             EditMode::CategoryRename => self.selected_category > 0,
         };
         if !valid {
@@ -485,7 +517,7 @@ impl App {
                     "先选中一个书签再操作（右侧列表）"
                 }
                 EditMode::CategoryRename => "“全部”是虚拟分类，请先选中左侧一个真实分类",
-                EditMode::CategoryCreate => "无法进入编辑",
+                EditMode::CategoryCreate | EditMode::AddBookmark => "无法进入编辑",
             };
             self.status_message = Some(hint.to_owned());
             return;
@@ -502,7 +534,7 @@ impl App {
         }
         self.edit_mode = None;
         self.edit_text.clear();
-        if text.trim().is_empty() {
+        if text.trim().is_empty() && !matches!(expected, EditMode::AddBookmark) {
             self.status_message = Some("名称不能为空".to_owned());
             return;
         }
@@ -511,6 +543,9 @@ impl App {
             EditMode::CategoryCreate => self.create_category(&text, now),
             EditMode::CategoryRename => self.rename_category(&text, now),
             EditMode::BookmarkMove => self.move_bookmark(&text, now),
+            // AddBookmark commits through commit_editing_action -> Action::AddBookmark,
+            // which sets the mutation in `handle`.
+            EditMode::AddBookmark => {}
         }
     }
 
@@ -859,6 +894,19 @@ impl Mutation {
                 bookmark.category = new_category.clone();
                 Ok(())
             }
+            Self::AddBookmark { input, category } => {
+                // Resolve inside the mutation replay so concurrent runs revalidate
+                // against the latest database state and the live filesystem.
+                let trimmed = input.trim();
+                let raw = if trimmed.is_empty() { "." } else { trimmed };
+                let base = std::env::current_dir().unwrap_or_default();
+                let path = paths::normalize_directory_from(std::path::Path::new(raw), &base)
+                    .map_err(|error| error.to_string())?;
+                database
+                    .add_bookmark(path, None, Some(category.clone()))
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            }
         }
     }
 }
@@ -884,6 +932,62 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
     use uuid::Uuid;
+
+    #[test]
+    fn add_bookmark_mutation_replays_onto_the_latest_database() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("boxed");
+        std::fs::create_dir(&target).unwrap();
+        let mut database = Database::default();
+        let mutation = Mutation::AddBookmark {
+            input: target.to_string_lossy().into_owned(),
+            category: "default".into(),
+        };
+        mutation.apply(&mut database).unwrap();
+        assert_eq!(database.bookmarks.len(), 1);
+        assert_eq!(
+            database.bookmarks[0].path,
+            crate::paths::strip_verbatim_prefix(target.canonicalize().unwrap())
+        );
+        assert_eq!(database.bookmarks[0].category, "default");
+    }
+
+    #[test]
+    fn add_bookmark_mutation_rejects_a_missing_directory() {
+        let mut database = Database::default();
+        let mutation = Mutation::AddBookmark {
+            input: "definitely-missing-mkd-dir".into(),
+            category: "default".into(),
+        };
+        assert!(mutation.apply(&mut database).is_err());
+        assert!(database.bookmarks.is_empty());
+    }
+
+    #[test]
+    fn add_bookmark_targets_the_selected_real_category() {
+        let mut app = App::from_database(Database::default());
+        // "全部" is virtual: adding from it lands in default.
+        app.handle(Action::AddBookmark(String::new()), Utc::now());
+        let Some(Mutation::AddBookmark { input, category }) = app.take_mutation() else {
+            panic!("expected AddBookmark mutation");
+        };
+        assert_eq!(input, "");
+        assert_eq!(category, "default");
+    }
+
+    #[test]
+    fn add_bookmark_from_a_real_category_uses_that_category() {
+        let mut database = Database::default();
+        database.add_category("work").unwrap();
+        // categories: [全部, default, work] — index 2 selects work.
+        let mut app = App::from_database(database);
+        app.handle(Action::ClickCategory { row: 2 }, Utc::now());
+        app.handle(Action::AddBookmark(String::new()), Utc::now());
+        let Some(Mutation::AddBookmark { category, .. }) = app.take_mutation() else {
+            panic!("expected AddBookmark mutation");
+        };
+        assert_eq!(category, "work");
+    }
 
     #[test]
     fn enter_selects_current_valid_bookmark_with_stable_identity() {

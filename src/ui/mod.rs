@@ -210,6 +210,7 @@ pub(crate) fn map_key_event(event: KeyEvent, searching: bool) -> Option<Action> 
         KeyCode::Char('D') if !searching && plain_or_shift => Some(Action::DeleteCategory),
         KeyCode::Char('m') if !searching && plain_or_shift => Some(Action::BeginMoveBookmark),
         KeyCode::Char('y') if !searching && plain_or_shift => Some(Action::CopySelectedPath),
+        KeyCode::Char('a') if !searching && plain_or_shift => Some(Action::BeginAddBookmark),
         _ => None,
     }
 }

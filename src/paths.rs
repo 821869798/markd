@@ -63,7 +63,7 @@ fn normalize_directory_from_with_home(
 /// Remove the Windows verbatim prefix (`\\?\`) that `canonicalize` produces.
 /// Verbatim paths break `Set-Location`, `Get-ChildItem`, and other PowerShell
 /// cmdlets, so every stored and emitted path uses the ordinary drive form.
-fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+pub(crate) fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
     let text = path.to_string_lossy();
     if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
         PathBuf::from(format!(r"\\{}", stripped))
