@@ -15,6 +15,31 @@
 
 ### Install
 
+**Option 1: Download a prebuilt binary (recommended)**
+
+Grab the archive for your platform from the [Releases page](https://github.com/OWNER/mkd/releases), extract it, and put `mkd` (or `mkd.exe`) somewhere on your `PATH`:
+
+| Platform | Archive |
+| --- | --- |
+| Windows x64 | `mkd-x86_64-pc-windows-msvc.zip` |
+| Windows ARM64 | `mkd-aarch64-pc-windows-msvc.zip` |
+| macOS ARM64 (Apple Silicon) | `mkd-aarch64-apple-darwin.tar.gz` |
+| Linux x64 | `mkd-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux ARM64 | `mkd-aarch64-unknown-linux-gnu.tar.gz` |
+
+Example (Linux/macOS):
+
+```bash
+VERSION=v0.1.0
+curl -LO https://github.com/OWNER/mkd/releases/download/$VERSION/mkd-$(uname -m)-unknown-linux-gnu.tar.gz
+# macOS: mkd-aarch64-apple-darwin.tar.gz
+tar -xzf mkd-*.tar.gz
+sudo mv mkd-*/mkd /usr/local/bin/
+mkd --version
+```
+
+**Option 2: Install from source with Cargo**
+
 With the Rust toolchain installed, from the source directory:
 
 ```console
@@ -22,6 +47,44 @@ cargo install --path .
 ```
 
 Make sure Cargo's bin directory (usually `~/.cargo/bin`, on Windows `%USERPROFILE%\.cargo\bin`) is on your `PATH`.
+
+### Quick start
+
+1. **Register the shell function** (one-time, per shell):
+
+```console
+mkd setup          # auto-detects your shell and asks for confirmation
+```
+
+Then **open a new terminal window** (or reload your profile) and confirm the function is loaded — `Get-Command mkd` on PowerShell should report `Function`, not `Application`.
+
+2. **Add your first bookmarks**:
+
+```console
+mkd add .                          # bookmark the current directory
+mkd add ~/projects/api --name api --category work
+```
+
+3. **Jump**:
+
+```console
+mkd          # opens the TUI
+```
+
+Use `j/k` or arrows to move, `/` to fuzzy-search, `Enter` (or double-click) to jump. The most-used directories rank higher automatically.
+
+4. **Organize with groups** — in the TUI, press `c` to create a group, select a bookmark and press `a` to pick a group from a popup list (`↑↓` + Enter). Or from the command line:
+
+```console
+mkd category add work
+mkd list --category work
+```
+
+5. **Uninstall registration** when no longer needed:
+
+```console
+mkd setup --remove
+```
 
 ### Shell registration
 

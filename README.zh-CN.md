@@ -15,6 +15,31 @@
 
 ### 安装
 
+**方式一：下载预编译二进制（推荐）**
+
+从 [Releases 页面](https://github.com/OWNER/mkd/releases) 下载对应平台的压缩包，解压后把 `mkd`（或 `mkd.exe`）放进 `PATH` 里的任意目录：
+
+| 平台 | 压缩包 |
+| --- | --- |
+| Windows x64 | `mkd-x86_64-pc-windows-msvc.zip` |
+| Windows ARM64 | `mkd-aarch64-pc-windows-msvc.zip` |
+| macOS ARM64（Apple 芯片） | `mkd-aarch64-apple-darwin.tar.gz` |
+| Linux x64 | `mkd-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux ARM64 | `mkd-aarch64-unknown-linux-gnu.tar.gz` |
+
+示例（Linux/macOS）：
+
+```bash
+VERSION=v0.1.0
+curl -LO https://github.com/OWNER/mkd/releases/download/$VERSION/mkd-aarch64-apple-darwin.tar.gz
+# Linux x64 对应 mkd-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf mkd-*.tar.gz
+sudo mv mkd-*/mkd /usr/local/bin/
+mkd --version
+```
+
+**方式二：源码编译安装**
+
 需要已安装 Rust 工具链。进入源码目录后运行：
 
 ```console
@@ -22,6 +47,44 @@ cargo install --path .
 ```
 
 确认 Cargo 的二进制目录（通常是 `~/.cargo/bin`，Windows 通常是 `%USERPROFILE%\.cargo\bin`）已经加入 `PATH`。
+
+### 快速上手
+
+1. **注册 Shell 函数**（每个 Shell 只需一次）：
+
+```console
+mkd setup          # 自动检测当前 Shell，确认后写入配置
+```
+
+然后**新开一个终端窗口**（或重载配置），验证函数已生效——PowerShell 里 `Get-Command mkd` 应显示 `Function` 而不是 `Application`。
+
+2. **添加第一批书签**：
+
+```console
+mkd add .                          # 收藏当前目录
+mkd add ~/projects/api --name api --category work
+```
+
+3. **跳转**：
+
+```console
+mkd          # 打开 TUI
+```
+
+`j/k` 或方向键移动，`/` 模糊搜索，`Enter`（或鼠标双击）跳转。访问越多的目录自动排越前。
+
+4. **分组管理**——TUI 里按 `c` 新建分组，选中书签按 `a` 在弹窗里上下选分组（`↑↓` + 回车）。也可以用命令行：
+
+```console
+mkd category add work
+mkd list --category work
+```
+
+5. **不再需要时卸载注册**：
+
+```console
+mkd setup --remove
+```
 
 ### Shell 注册
 
