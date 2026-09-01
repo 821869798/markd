@@ -3,6 +3,10 @@ name = "mkd"
 version = "0.1.0"
 edition = "2024"
 readme = "README.md"
+license = "MIT"
+description = "Cross-platform directory bookmark manager with a Rust TUI and shell integration"
+keywords = ["bookmark", "tui", "directory", "jump", "cli"]
+categories = ["command-line-utilities", "filesystem"]
 
 [lib]
 name = "mkd"
