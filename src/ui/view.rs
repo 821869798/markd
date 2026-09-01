@@ -82,10 +82,8 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
         None if app.is_searching() => {
             "搜索中: 输入文字过滤  Enter 跳转  Esc 退出搜索（管理操作需先退搜索）".to_owned()
         }
-        None => {
-            "↑/↓ 或 j/k 移动  Tab 切栏  / 搜索  a 加目录  c 新建分组  m 归组  y 复制  h 帮助  Enter 跳转"
-                .to_owned()
-        }
+        None => "↑/↓ 或 j/k 移动  Tab 切栏  / 搜索  a 归组  c 新建分组  y 复制  h 帮助  Enter 跳转"
+            .to_owned(),
     };
     let footer_style = if app.status_message().is_some() {
         Style::default().fg(Color::Red)
@@ -109,6 +107,10 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 fn render_edit_popup(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    if app.is_picking_category() {
+        render_category_picker(frame, area, app);
+        return;
+    }
     // Fixed 5-row popup: 2 borders + input + blank + hint. Percentages make
     // short terminals truncate the hint, which confused users.
     let popup = Rect {
@@ -120,10 +122,8 @@ fn render_edit_popup(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(Clear, popup);
     let title = app.edit_prompt().unwrap_or("编辑");
     let hint = match title {
-        "新建分类" => "输入新分类名，回车提交，Esc 取消",
+        "新建分类" => "输入新分组名，回车提交，Esc 取消",
         "重命名分类" => "输入新名称，回车提交，Esc 取消",
-        "移动到分类" => "输入目标分类名（如 work），回车提交，Esc 取消",
-        "添加书签到当前分组" => "输入路径，留空=当前目录，回车提交，Esc 取消",
         _ => "输入新名称，回车提交，Esc 取消",
     };
 
@@ -139,6 +139,40 @@ fn render_edit_popup(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .saturating_add(2 + app.edit_text().chars().count() as u16)
         .min(popup.right().saturating_sub(2));
     frame.set_cursor_position((input_x, popup.y + 1));
+}
+
+fn render_category_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let items = app.picker_items();
+    let rows = items.len() as u16 + 2; // borders
+    let height = rows.min(area.height);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(40) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width: area.width.min(40),
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    let selected = app.picker_index();
+    let list_items: Vec<ListItem> = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let style = if index == selected {
+                Style::default().bg(Color::White).fg(Color::Black)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(format!("  {item}"))).style(style)
+        })
+        .collect();
+    frame.render_widget(
+        List::new(list_items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("选择分组 (↑↓ 选，回车确认，n 新建)"),
+        ),
+        popup,
+    );
 }
 
 fn render_help_popup(frame: &mut Frame<'_>, area: Rect) {
@@ -162,13 +196,12 @@ fn render_help_popup(frame: &mut Frame<'_>, area: Rect) {
         "书签",
         "  Enter                跳转到选中目录",
         "  y                    复制选中书签路径到剪贴板",
-        "  a                    添加目录到当前分组（留空=当前目录）",
+        "  a                    归组：为选中书签选择分组（弹窗上下选）",
         "  e                    重命名书签",
         "  d → d                删除书签（按两次确认）",
-        "  m                    移动书签到其他分组",
         "",
         "分组（分类）",
-        "  c                    新建分组",
+        "  c                    新建分组（输入名字）",
         "  r                    重命名分组（选中分组后）",
         "  D → D                删除分组（书签归回 default）",
         "",
@@ -315,11 +348,74 @@ fn bordered_inner(area: Rect) -> Rect {
 mod tests {
     use super::render;
     use crate::model::{Bookmark, Database};
-    use crate::ui::app::{Action, App};
+    use crate::ui::app::{Action, App, Mutation};
     use chrono::{TimeZone, Utc};
     use ratatui::{Terminal, backend::TestBackend};
     use std::path::PathBuf;
     use uuid::Uuid;
+
+    #[test]
+    fn category_picker_moves_bookmark_and_supports_create_new() {
+        let mut database = Database::default();
+        database.add_category("work").unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        database
+            .add_bookmark(temp.path().to_path_buf(), Some("repo".into()), None)
+            .unwrap();
+        let mut app = App::from_database(database);
+
+        // Open the picker on the first bookmark.
+        app.handle(Action::Down, Utc::now());
+        app.handle(Action::BeginAddBookmark, Utc::now());
+        assert!(app.is_picking_category());
+
+        // Down to "新建分组…", then create-new instead of selecting.
+        app.handle(Action::BrowseCategoriesDown, Utc::now());
+        app.handle(Action::BrowseCategoriesSelect, Utc::now());
+        assert_eq!(app.edit_prompt(), Some("新建分类"));
+
+        // Cancel out; reopen and pick "work" directly this time.
+        app.handle(Action::Cancel, Utc::now());
+        app.handle(Action::BeginAddBookmark, Utc::now());
+        app.handle(Action::BrowseCategoriesSelect, Utc::now());
+        let Some(Mutation::MoveBookmark { new_category, .. }) = app.take_mutation() else {
+            panic!("expected MoveBookmark mutation");
+        };
+        assert_eq!(new_category, "work");
+    }
+
+    #[test]
+    fn picker_navigation_is_bounded_and_requires_a_selection() {
+        let mut database = Database::default();
+        database.add_category("work").unwrap();
+        let mut app = App::from_database(database);
+
+        // No bookmark selected: `a` is a no-op with a hint.
+        app.handle(Action::BeginAddBookmark, Utc::now());
+        assert!(!app.is_picking_category());
+        assert_eq!(
+            app.status_message(),
+            Some("先选中一个书签（右侧列表）再归组")
+        );
+
+        // With a selection the picker opens and clamps navigation.
+        let temp = tempfile::tempdir().unwrap();
+        let mut db2 = Database::default();
+        db2.add_category("work").unwrap();
+        db2.add_bookmark(temp.path().to_path_buf(), Some("repo".into()), None)
+            .unwrap();
+        let mut app2 = App::from_database(db2);
+        app2.handle(Action::Down, Utc::now());
+        app2.handle(Action::BeginAddBookmark, Utc::now());
+        for _ in 0..10 {
+            app2.handle(Action::BrowseCategoriesDown, Utc::now());
+        }
+        assert_eq!(app2.picker_index(), 1); // items: [work, 新建分组…]
+        for _ in 0..10 {
+            app2.handle(Action::BrowseCategoriesUp, Utc::now());
+        }
+        assert_eq!(app2.picker_index(), 0);
+    }
 
     #[test]
     fn empty_database_renders_empty_state() {
@@ -358,7 +454,7 @@ mod tests {
         app.handle(Action::Input('w'), test_now());
         let buffer = render_to_string(&mut app, 80, 24);
         assert!(buffer.contains(">w"), "{buffer}");
-        assert!(buffer.contains("输入新分类名"), "{buffer}");
+        assert!(buffer.contains("输入新分组名"), "{buffer}");
     }
 
     #[test]

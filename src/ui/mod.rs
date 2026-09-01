@@ -172,6 +172,24 @@ fn key_action(event: KeyEvent, app: &App) -> Option<Action> {
         return None;
     }
     if app.is_editing() {
+        if app.is_picking_category() {
+            return match event.code {
+                KeyCode::Up | KeyCode::Char('k')
+                    if event.modifiers.is_empty() || event.modifiers == KeyModifiers::SHIFT =>
+                {
+                    Some(Action::BrowseCategoriesUp)
+                }
+                KeyCode::Down | KeyCode::Char('j')
+                    if event.modifiers.is_empty() || event.modifiers == KeyModifiers::SHIFT =>
+                {
+                    Some(Action::BrowseCategoriesDown)
+                }
+                KeyCode::Enter => Some(Action::BrowseCategoriesSelect),
+                KeyCode::Char('n') => Some(Action::BrowseCategoriesCreate),
+                KeyCode::Esc => Some(Action::Cancel),
+                _ => None,
+            };
+        }
         return match event.code {
             KeyCode::Enter => app.commit_editing_action(),
             KeyCode::Esc => Some(Action::Cancel),
@@ -208,9 +226,8 @@ pub(crate) fn map_key_event(event: KeyEvent, searching: bool) -> Option<Action> 
         KeyCode::Char('c') if !searching && plain_or_shift => Some(Action::BeginCreateCategory),
         KeyCode::Char('r') if !searching && plain_or_shift => Some(Action::BeginRenameCategory),
         KeyCode::Char('D') if !searching && plain_or_shift => Some(Action::DeleteCategory),
-        KeyCode::Char('m') if !searching && plain_or_shift => Some(Action::BeginMoveBookmark),
-        KeyCode::Char('y') if !searching && plain_or_shift => Some(Action::CopySelectedPath),
         KeyCode::Char('a') if !searching && plain_or_shift => Some(Action::BeginAddBookmark),
+        KeyCode::Char('y') if !searching && plain_or_shift => Some(Action::CopySelectedPath),
         KeyCode::Char('h') if !searching && plain_or_shift => Some(Action::ToggleHelp),
         _ => None,
     }

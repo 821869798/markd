@@ -5,7 +5,6 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::model::Database;
-use crate::paths;
 use crate::query::{Query, query_bookmarks};
 
 const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
@@ -43,11 +42,13 @@ pub enum Action {
     MoveBookmarkToCategory(String),
     BeginCreateCategory,
     BeginRenameCategory,
-    BeginMoveBookmark,
-    BeginAddBookmark,
-    AddBookmark(String),
     CopySelectedPath,
     ToggleHelp,
+    BeginAddBookmark,
+    BrowseCategoriesUp,
+    BrowseCategoriesDown,
+    BrowseCategoriesSelect,
+    BrowseCategoriesCreate,
     ClickBookmark {
         row: usize,
         button: ClickButton,
@@ -86,8 +87,7 @@ enum EditMode {
     BookmarkRename,
     CategoryCreate,
     CategoryRename,
-    BookmarkMove,
-    AddBookmark,
+    CategoryPicker,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,10 +114,6 @@ pub(crate) enum Mutation {
         id: Uuid,
         old_category: String,
         new_category: String,
-    },
-    AddBookmark {
-        input: String,
-        category: String,
     },
 }
 
@@ -149,6 +145,7 @@ pub struct App {
     last_mutation: Option<Mutation>,
     pending_copy: Option<String>,
     help_visible: bool,
+    picker_index: usize,
 }
 
 impl App {
@@ -182,6 +179,7 @@ impl App {
             last_mutation: None,
             pending_copy: None,
             help_visible: false,
+            picker_index: 0,
         };
         app.refresh(now, None);
         app
@@ -335,17 +333,61 @@ impl App {
                 self.begin_edit(EditMode::CategoryRename);
                 Outcome::Continue
             }
-            Action::BeginMoveBookmark => {
-                self.begin_edit(EditMode::BookmarkMove);
-                Outcome::Continue
-            }
             Action::BeginAddBookmark => {
-                self.begin_edit(EditMode::AddBookmark);
+                // Requires a selected bookmark; the picker assigns its group.
+                if self.selected_id().is_none() {
+                    self.status_message = Some("先选中一个书签（右侧列表）再归组".to_owned());
+                    return Outcome::Continue;
+                }
+                self.begin_edit(EditMode::CategoryPicker);
+                self.picker_index = 0;
                 Outcome::Continue
             }
-            Action::AddBookmark(input) => {
-                let category = self.current_category_name();
-                self.last_mutation = Some(Mutation::AddBookmark { input, category });
+            Action::BrowseCategoriesUp => {
+                if self.edit_mode == Some(EditMode::CategoryPicker) {
+                    self.picker_index = self.picker_index.saturating_sub(1);
+                }
+                Outcome::Continue
+            }
+            Action::BrowseCategoriesDown => {
+                if self.edit_mode == Some(EditMode::CategoryPicker) {
+                    let len = self.picker_items().len();
+                    self.picker_index = (self.picker_index + 1).min(len.saturating_sub(1));
+                }
+                Outcome::Continue
+            }
+            Action::BrowseCategoriesSelect => {
+                if self.edit_mode == Some(EditMode::CategoryPicker) {
+                    let items = self.picker_items();
+                    let Some(choice) = items.get(self.picker_index).cloned() else {
+                        return Outcome::Continue;
+                    };
+                    if choice == "新建分组…" {
+                        self.edit_mode = Some(EditMode::CategoryCreate);
+                        self.edit_text.clear();
+                    } else if let Some(id) = self.selected_id() {
+                        let old = self
+                            .database
+                            .bookmarks
+                            .iter()
+                            .find(|bookmark| bookmark.id == id)
+                            .map(|bookmark| bookmark.category.clone());
+                        if let Some(old_category) = old {
+                            self.last_mutation = Some(Mutation::MoveBookmark {
+                                id,
+                                old_category,
+                                new_category: choice.clone(),
+                            });
+                        }
+                    }
+                }
+                Outcome::Continue
+            }
+            Action::BrowseCategoriesCreate => {
+                if self.edit_mode == Some(EditMode::CategoryPicker) {
+                    self.edit_mode = Some(EditMode::CategoryCreate);
+                    self.edit_text.clear();
+                }
                 Outcome::Continue
             }
             Action::ClickBookmark {
@@ -379,19 +421,6 @@ impl App {
 
     pub fn selected_category(&self) -> usize {
         self.selected_category
-    }
-
-    /// The real category a new bookmark should land in. "全部" is a virtual
-    /// filter, so adds from it fall back to the default category.
-    pub(crate) fn current_category_name(&self) -> String {
-        if self.selected_category == 0 {
-            "default".to_owned()
-        } else {
-            self.categories
-                .get(self.selected_category)
-                .cloned()
-                .unwrap_or_else(|| "default".to_owned())
-        }
     }
 
     pub fn selected_bookmark(&self) -> Option<usize> {
@@ -452,9 +481,30 @@ impl App {
             EditMode::BookmarkRename => "重命名书签",
             EditMode::CategoryCreate => "新建分类",
             EditMode::CategoryRename => "重命名分类",
-            EditMode::BookmarkMove => "移动到分类",
-            EditMode::AddBookmark => "添加书签到当前分组",
+            EditMode::CategoryPicker => "选择分组",
         })
+    }
+
+    /// The category choices shown in the picker popup, plus a create-new entry.
+    pub fn picker_items(&self) -> Vec<String> {
+        let mut items: Vec<String> = self
+            .database
+            .categories
+            .iter()
+            .filter(|category| category.as_str() != "default")
+            .cloned()
+            .collect();
+        items.sort();
+        items.push("新建分组…".to_owned());
+        items
+    }
+
+    pub fn picker_index(&self) -> usize {
+        self.picker_index
+    }
+
+    pub(crate) fn is_picking_category(&self) -> bool {
+        self.edit_mode == Some(EditMode::CategoryPicker)
     }
 
     pub(crate) fn commit_editing_action(&self) -> Option<Action> {
@@ -462,8 +512,8 @@ impl App {
             EditMode::BookmarkRename => Action::CommitRename(self.edit_text.clone()),
             EditMode::CategoryCreate => Action::CreateCategory(self.edit_text.clone()),
             EditMode::CategoryRename => Action::RenameCategory(self.edit_text.clone()),
-            EditMode::BookmarkMove => Action::MoveBookmarkToCategory(self.edit_text.clone()),
-            EditMode::AddBookmark => Action::AddBookmark(self.edit_text.clone()),
+            // Enter in the picker selects the highlighted category.
+            EditMode::CategoryPicker => Action::BrowseCategoriesSelect,
         })
     }
 
@@ -528,17 +578,17 @@ impl App {
 
     fn begin_edit(&mut self, mode: EditMode) {
         let valid = match mode {
-            EditMode::BookmarkRename | EditMode::BookmarkMove => self.selected_id().is_some(),
-            EditMode::CategoryCreate | EditMode::AddBookmark => true,
+            EditMode::BookmarkRename | EditMode::CategoryPicker => self.selected_id().is_some(),
+            EditMode::CategoryCreate => true,
             EditMode::CategoryRename => self.selected_category > 0,
         };
         if !valid {
             let hint = match mode {
-                EditMode::BookmarkRename | EditMode::BookmarkMove => {
+                EditMode::BookmarkRename | EditMode::CategoryPicker => {
                     "先选中一个书签再操作（右侧列表）"
                 }
                 EditMode::CategoryRename => "“全部”是虚拟分类，请先选中左侧一个真实分类",
-                EditMode::CategoryCreate | EditMode::AddBookmark => "无法进入编辑",
+                EditMode::CategoryCreate => "无法进入编辑",
             };
             self.status_message = Some(hint.to_owned());
             return;
@@ -555,7 +605,7 @@ impl App {
         }
         self.edit_mode = None;
         self.edit_text.clear();
-        if text.trim().is_empty() && !matches!(expected, EditMode::AddBookmark) {
+        if text.trim().is_empty() {
             self.status_message = Some("名称不能为空".to_owned());
             return;
         }
@@ -563,10 +613,7 @@ impl App {
             EditMode::BookmarkRename => self.rename_selected(&text, now),
             EditMode::CategoryCreate => self.create_category(&text, now),
             EditMode::CategoryRename => self.rename_category(&text, now),
-            EditMode::BookmarkMove => self.move_bookmark(&text, now),
-            // AddBookmark commits through commit_editing_action -> Action::AddBookmark,
-            // which sets the mutation in `handle`.
-            EditMode::AddBookmark => {}
+            EditMode::CategoryPicker => {}
         }
     }
 
@@ -915,19 +962,6 @@ impl Mutation {
                 bookmark.category = new_category.clone();
                 Ok(())
             }
-            Self::AddBookmark { input, category } => {
-                // Resolve inside the mutation replay so concurrent runs revalidate
-                // against the latest database state and the live filesystem.
-                let trimmed = input.trim();
-                let raw = if trimmed.is_empty() { "." } else { trimmed };
-                let base = std::env::current_dir().unwrap_or_default();
-                let path = paths::normalize_directory_from(std::path::Path::new(raw), &base)
-                    .map_err(|error| error.to_string())?;
-                database
-                    .add_bookmark(path, None, Some(category.clone()))
-                    .map_err(|error| error.to_string())?;
-                Ok(())
-            }
         }
     }
 }
@@ -953,62 +987,6 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
     use uuid::Uuid;
-
-    #[test]
-    fn add_bookmark_mutation_replays_onto_the_latest_database() {
-        let temp = tempfile::tempdir().unwrap();
-        let target = temp.path().join("boxed");
-        std::fs::create_dir(&target).unwrap();
-        let mut database = Database::default();
-        let mutation = Mutation::AddBookmark {
-            input: target.to_string_lossy().into_owned(),
-            category: "default".into(),
-        };
-        mutation.apply(&mut database).unwrap();
-        assert_eq!(database.bookmarks.len(), 1);
-        assert_eq!(
-            database.bookmarks[0].path,
-            crate::paths::strip_verbatim_prefix(target.canonicalize().unwrap())
-        );
-        assert_eq!(database.bookmarks[0].category, "default");
-    }
-
-    #[test]
-    fn add_bookmark_mutation_rejects_a_missing_directory() {
-        let mut database = Database::default();
-        let mutation = Mutation::AddBookmark {
-            input: "definitely-missing-mkd-dir".into(),
-            category: "default".into(),
-        };
-        assert!(mutation.apply(&mut database).is_err());
-        assert!(database.bookmarks.is_empty());
-    }
-
-    #[test]
-    fn add_bookmark_targets_the_selected_real_category() {
-        let mut app = App::from_database(Database::default());
-        // "全部" is virtual: adding from it lands in default.
-        app.handle(Action::AddBookmark(String::new()), Utc::now());
-        let Some(Mutation::AddBookmark { input, category }) = app.take_mutation() else {
-            panic!("expected AddBookmark mutation");
-        };
-        assert_eq!(input, "");
-        assert_eq!(category, "default");
-    }
-
-    #[test]
-    fn add_bookmark_from_a_real_category_uses_that_category() {
-        let mut database = Database::default();
-        database.add_category("work").unwrap();
-        // categories: [全部, default, work] — index 2 selects work.
-        let mut app = App::from_database(database);
-        app.handle(Action::ClickCategory { row: 2 }, Utc::now());
-        app.handle(Action::AddBookmark(String::new()), Utc::now());
-        let Some(Mutation::AddBookmark { category, .. }) = app.take_mutation() else {
-            panic!("expected AddBookmark mutation");
-        };
-        assert_eq!(category, "work");
-    }
 
     #[test]
     fn enter_selects_current_valid_bookmark_with_stable_identity() {
