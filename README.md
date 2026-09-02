@@ -35,13 +35,19 @@ mise use -g asdf:821869798/asdf-mkd
 # mise use -g mkd@latest
 ```
 
-**Option 2: One-line installer (Linux/macOS)**
+**Option 2: One-line installers**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/821869798/markd/master/packaging/install.sh | sh
+# Linux / macOS
+ curl -fsSL https://raw.githubusercontent.com/821869798/markd/master/packaging/install.sh | sh
 ```
 
-Installs to `~/.local/bin` by default (override with `DEST=...`).
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/821869798/markd/master/packaging/install.ps1 | iex
+```
+
+Installs to `~/.local/bin` by default (override with `DEST` / `$env:DEST`).
 
 **Option 3: Download a prebuilt binary**
 

@@ -35,13 +35,19 @@ mise use -g asdf:821869798/asdf-mkd
 # mise use -g mkd@latest
 ```
 
-**方式二：一键安装脚本（Linux/macOS）**
+**方式二：一键安装脚本**
 
 ```bash
+# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/821869798/markd/master/packaging/install.sh | sh
 ```
 
-默认安装到 `~/.local/bin`（可用 `DEST=...` 覆盖）。
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/821869798/markd/master/packaging/install.ps1 | iex
+```
+
+默认安装到 `~/.local/bin`（可用 `DEST` / `$env:DEST` 覆盖）。
 
 **方式三：下载预编译二进制**
 
