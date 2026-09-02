@@ -210,7 +210,10 @@ pub(crate) fn map_key_event(event: KeyEvent, searching: bool) -> Option<Action> 
         return None;
     }
     let plain_or_shift = event.modifiers.is_empty() || event.modifiers == KeyModifiers::SHIFT;
+    let alt_only = event.modifiers == KeyModifiers::ALT;
     match event.code {
+        KeyCode::Up if alt_only => Some(Action::MoveSelectedUp),
+        KeyCode::Down if alt_only => Some(Action::MoveSelectedDown),
         KeyCode::Up => Some(Action::Up),
         KeyCode::Down => Some(Action::Down),
         KeyCode::Enter => Some(Action::Confirm),
@@ -528,6 +531,7 @@ mod tests {
             created_at: test_now(),
             last_visited_at: None,
             visit_count: 0,
+            sort_key: None,
         };
         let old_id = old.id;
         let mut latest = Database {
@@ -547,6 +551,7 @@ mod tests {
                 created_at: test_now(),
                 last_visited_at: None,
                 visit_count: 0,
+                sort_key: None,
             }],
         };
         let mut app = App::from_database_at(app_database, test_now());
@@ -596,6 +601,16 @@ mod tests {
         assert_eq!(key(KeyCode::Char('/'), false), Some(Action::StartSearch));
         assert_eq!(key(KeyCode::Char('j'), true), Some(Action::Input('j')));
         assert_eq!(key(KeyCode::Char('/'), true), Some(Action::Input('/')));
+        // Alt+Arrow moves the selected bookmark's manual order.
+        let alt_up = KeyEvent::new(KeyCode::Up, KeyModifiers::ALT);
+        let alt_down = KeyEvent::new(KeyCode::Down, KeyModifiers::ALT);
+        assert_eq!(map_key_event(alt_up, false), Some(Action::MoveSelectedUp));
+        assert_eq!(
+            map_key_event(alt_down, false),
+            Some(Action::MoveSelectedDown)
+        );
+        // Plain arrows still navigate; Alt+Arrow is not swallowed by search.
+        assert_eq!(key(KeyCode::Up, false), Some(Action::Up));
         assert_eq!(key(KeyCode::Backspace, true), Some(Action::Backspace));
         assert_eq!(key(KeyCode::Backspace, false), None);
         assert_eq!(
@@ -799,6 +814,7 @@ mod tests {
                 created_at: test_now(),
                 last_visited_at: None,
                 visit_count: 0,
+                sort_key: None,
             })
             .collect();
         App::from_database_at(

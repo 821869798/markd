@@ -4,7 +4,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::model::Database;
+use crate::model::{Database, MoveDirection};
 use crate::query::{Query, query_bookmarks};
 
 const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
@@ -49,6 +49,8 @@ pub enum Action {
     BrowseCategoriesDown,
     BrowseCategoriesSelect,
     BrowseCategoriesCreate,
+    MoveSelectedUp,
+    MoveSelectedDown,
     ClickBookmark {
         row: usize,
         button: ClickButton,
@@ -114,6 +116,11 @@ pub(crate) enum Mutation {
         id: Uuid,
         old_category: String,
         new_category: String,
+    },
+    MoveBookmarkPosition {
+        id: Uuid,
+        direction: MoveDirection,
+        ordered_ids: Vec<Uuid>,
     },
 }
 
@@ -274,6 +281,31 @@ impl App {
                     self.status_message = Some("路径已复制到剪贴板".to_owned());
                 } else {
                     self.status_message = Some("没有可复制的书签".to_owned());
+                }
+                Outcome::Continue
+            }
+            Action::MoveSelectedUp | Action::MoveSelectedDown => {
+                let direction = match action {
+                    Action::MoveSelectedUp => MoveDirection::Up,
+                    _ => MoveDirection::Down,
+                };
+                if let Some(id) = self.selected_id() {
+                    let ordered_ids: Vec<Uuid> =
+                        self.visible_bookmarks.iter().map(|row| row.id).collect();
+                    self.last_mutation = Some(Mutation::MoveBookmarkPosition {
+                        id,
+                        direction,
+                        ordered_ids: ordered_ids.clone(),
+                    });
+                    // Optimistically apply locally; reconcile_persistence reloads
+                    // on failure so the UI never diverges from disk.
+                    let mut snapshot = self.database.clone();
+                    if snapshot.move_bookmark(id, direction, &ordered_ids).is_ok() {
+                        self.database = snapshot;
+                        self.refresh(now, Some(id));
+                    }
+                } else {
+                    self.status_message = Some("先选中一个书签再移动（右侧列表）".to_owned());
                 }
                 Outcome::Continue
             }
@@ -962,6 +994,13 @@ impl Mutation {
                 bookmark.category = new_category.clone();
                 Ok(())
             }
+            Self::MoveBookmarkPosition {
+                id,
+                direction,
+                ordered_ids,
+            } => database
+                .move_bookmark(*id, *direction, ordered_ids)
+                .map_err(|error| error.to_string()),
         }
     }
 }
@@ -1368,6 +1407,7 @@ mod tests {
             created_at: test_now(),
             last_visited_at: None,
             visit_count: 0,
+            sort_key: None,
         }
     }
 

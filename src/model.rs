@@ -14,6 +14,11 @@ pub struct Bookmark {
     pub created_at: DateTime<Utc>,
     pub last_visited_at: Option<DateTime<Utc>>,
     pub visit_count: u64,
+    /// Manual position assigned by Alt+Arrow reordering. `None` keeps the
+    /// automatic (usage-frequency) ranking; `Some(n)` pins the bookmark into
+    /// the manually ordered head of the list.
+    #[serde(default)]
+    pub sort_key: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -31,6 +36,12 @@ impl Default for Database {
             bookmarks: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveDirection {
+    Up,
+    Down,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -78,6 +89,7 @@ impl Database {
             created_at: Utc::now(),
             last_visited_at: None,
             visit_count: 0,
+            sort_key: None,
         });
         Ok(self.bookmarks.last().expect("bookmark was just inserted"))
     }
@@ -157,6 +169,103 @@ impl Database {
         Ok(self.bookmarks.remove(index))
     }
 
+    /// Moves a bookmark up or down within its category's display order.
+    ///
+    /// The caller supplies the ordered, filtered list of bookmark IDs for the
+    /// category (as the TUI displays it). Moving pins both the target and its
+    /// neighbor into the manual ordering region by assigning concrete sort
+    /// keys that reflect the swap; previously manual items keep their keys so
+    /// the rest of the manual region stays stable.
+    pub fn move_bookmark(
+        &mut self,
+        id: Uuid,
+        direction: MoveDirection,
+        ordered_ids: &[Uuid],
+    ) -> Result<(), ModelError> {
+        let position = ordered_ids
+            .iter()
+            .position(|candidate| *candidate == id)
+            .ok_or_else(|| ModelError::BookmarkNotFound(id.to_string()))?;
+        let neighbor = match direction {
+            MoveDirection::Up => {
+                if position == 0 {
+                    return Ok(()); // already at the top: no-op
+                }
+                position - 1
+            }
+            MoveDirection::Down => {
+                if position + 1 >= ordered_ids.len() {
+                    return Ok(()); // already at the bottom: no-op
+                }
+                position + 1
+            }
+        };
+
+        // Assign keys 0..n over the manual head so the swap is exact and the
+        // remaining manual items keep their relative order. Auto items
+        // (sort_key None) follow after the manual region.
+        let mut manual_ids: Vec<Uuid> = ordered_ids
+            .iter()
+            .filter(|candidate| {
+                self.bookmarks
+                    .iter()
+                    .any(|bookmark| bookmark.id == **candidate && bookmark.sort_key.is_some())
+            })
+            .cloned()
+            .collect();
+
+        if manual_ids.is_empty() {
+            // First manual move: seed the manual region with the full current
+            // order so the swap is deterministic.
+            manual_ids = ordered_ids.to_vec();
+        }
+
+        // Position indices within manual_ids for the target and neighbor.
+        let target_in_manual = manual_ids
+            .iter()
+            .position(|candidate| *candidate == id)
+            .unwrap_or(manual_ids.len());
+        let neighbor_in_manual = manual_ids
+            .iter()
+            .position(|candidate| *candidate == ordered_ids[neighbor])
+            .unwrap_or(manual_ids.len());
+
+        // If either is missing from the manual region (auto items beyond the
+        // head), extend the manual region up to and including both.
+        let extend_to = target_in_manual.max(neighbor_in_manual);
+        while manual_ids.len() <= extend_to {
+            // Pull the next auto item from ordered_ids not yet in manual_ids.
+            let next = ordered_ids
+                .iter()
+                .find(|candidate| !manual_ids.contains(candidate))
+                .ok_or_else(|| ModelError::BookmarkNotFound(id.to_string()))?;
+            manual_ids.push(*next);
+        }
+
+        // Swap inside manual_ids.
+        let target_in_manual = manual_ids
+            .iter()
+            .position(|candidate| *candidate == id)
+            .ok_or_else(|| ModelError::BookmarkNotFound(id.to_string()))?;
+        let neighbor_in_manual = manual_ids
+            .iter()
+            .position(|candidate| *candidate == ordered_ids[neighbor])
+            .ok_or_else(|| ModelError::BookmarkNotFound(id.to_string()))?;
+        manual_ids.swap(target_in_manual, neighbor_in_manual);
+
+        // Persist the new keys.
+        for (index, manual_id) in manual_ids.iter().enumerate() {
+            if let Some(bookmark) = self
+                .bookmarks
+                .iter_mut()
+                .find(|bookmark| bookmark.id == *manual_id)
+            {
+                bookmark.sort_key = Some(index as u64);
+            }
+        }
+        Ok(())
+    }
+
     pub fn record_visit(&mut self, id: Uuid, now: DateTime<Utc>) -> Result<(), ModelError> {
         let bookmark = self
             .bookmarks
@@ -217,6 +326,41 @@ mod tests {
         db.rename_category("work", "personal").unwrap();
         assert_eq!(db.categories, vec!["default", "personal"]);
         assert_eq!(db.bookmarks[0].category, "personal");
+    }
+
+    #[test]
+    fn move_bookmark_up_swaps_manual_order() {
+        use super::MoveDirection;
+        let mut db = Database::default();
+        let temp = tempfile::tempdir().unwrap();
+        let a = temp.path().join("a");
+        let b = temp.path().join("b");
+        let c = temp.path().join("c");
+        for dir in [&a, &b, &c] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        db.add_bookmark(a, Some("a".into()), None).unwrap();
+        db.add_bookmark(b, Some("b".into()), None).unwrap();
+        db.add_bookmark(c, Some("c".into()), None).unwrap();
+        let ids: Vec<uuid::Uuid> = db.bookmarks.iter().map(|bm| bm.id).collect();
+        // Move "b" (index 1) up: it should pin [b, a, c].
+        db.move_bookmark(ids[1], MoveDirection::Up, &ids).unwrap();
+        assert_eq!(db.bookmarks[1].sort_key, Some(0));
+        assert_eq!(db.bookmarks[0].sort_key, Some(1));
+        assert_eq!(db.bookmarks[2].sort_key, Some(2));
+    }
+
+    #[test]
+    fn move_bookmark_at_boundary_is_a_no_op() {
+        use super::MoveDirection;
+        let mut db = Database::default();
+        let temp = tempfile::tempdir().unwrap();
+        db.add_bookmark(temp.path().to_path_buf(), Some("solo".into()), None)
+            .unwrap();
+        let ids: Vec<uuid::Uuid> = db.bookmarks.iter().map(|bm| bm.id).collect();
+        db.move_bookmark(ids[0], MoveDirection::Up, &ids).unwrap();
+        db.move_bookmark(ids[0], MoveDirection::Down, &ids).unwrap();
+        assert_eq!(db.bookmarks[0].sort_key, None); // untouched
     }
 
     #[test]

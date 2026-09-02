@@ -53,17 +53,25 @@ pub fn query_bookmarks<'a>(
         .collect::<Vec<_>>();
 
     results.sort_by(|left, right| {
-        right
-            .fuzzy_score
-            .cmp(&left.fuzzy_score)
-            .then_with(|| right.access_score.cmp(&left.access_score))
-            .then_with(|| {
-                left.bookmark
-                    .name
-                    .to_lowercase()
-                    .cmp(&right.bookmark.name.to_lowercase())
-            })
-            .then_with(|| left.bookmark.path.cmp(&right.bookmark.path))
+        // Manual ordering (sort_key) always wins; within the manual region the
+        // key defines the order, within the automatic region the previous
+        // fuzzy/access/name ranking applies.
+        match (&left.bookmark.sort_key, &right.bookmark.sort_key) {
+            (Some(left_key), Some(right_key)) => left_key.cmp(right_key),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => right
+                .fuzzy_score
+                .cmp(&left.fuzzy_score)
+                .then_with(|| right.access_score.cmp(&left.access_score))
+                .then_with(|| {
+                    left.bookmark
+                        .name
+                        .to_lowercase()
+                        .cmp(&right.bookmark.name.to_lowercase())
+                })
+                .then_with(|| left.bookmark.path.cmp(&right.bookmark.path)),
+        }
     });
     results
 }
@@ -224,6 +232,36 @@ mod tests {
                 .iter()
                 .all(|entry| entry.fuzzy_score == result[0].fuzzy_score)
         );
+    }
+
+    #[test]
+    fn manual_sort_key_pins_bookmarks_to_the_head_in_order() {
+        let mut db = fixture_database();
+        db.bookmarks[0].sort_key = Some(5);
+        db.bookmarks[1].sort_key = Some(1);
+        let result = query_bookmarks(&db, Query::default(), Utc::now());
+        let names: Vec<&str> = result.iter().map(|r| r.bookmark.name.as_str()).collect();
+        assert_eq!(names.first(), Some(&db.bookmarks[1].name.as_str()));
+        assert_eq!(names.get(1), Some(&db.bookmarks[0].name.as_str()));
+    }
+
+    #[test]
+    fn legacy_json_without_sort_key_still_loads() {
+        let json = r#"{
+            "version": 1,
+            "categories": ["default"],
+            "bookmarks": [{
+                "id": "0b6f8d9e-6d3e-4c4b-9d64-4f0e13f0a3d5",
+                "name": "legacy",
+                "path": "/tmp/legacy",
+                "category": "default",
+                "created_at": "2026-01-01T00:00:00Z",
+                "last_visited_at": null,
+                "visit_count": 0
+            }]
+        }"#;
+        let db: crate::model::Database = serde_json::from_str(json).unwrap();
+        assert_eq!(db.bookmarks[0].sort_key, None);
     }
 
     #[test]
@@ -398,6 +436,7 @@ mod tests {
             created_at: Utc::now(),
             last_visited_at,
             visit_count,
+            sort_key: None,
         }
     }
 

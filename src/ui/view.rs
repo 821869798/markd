@@ -188,6 +188,7 @@ fn render_help_popup(frame: &mut Frame<'_>, area: Rect) {
         "",
         "导航",
         "  j / k / ↑ / ↓       上下移动",
+        "  Alt+↑ / Alt+↓       移动书签顺序（手动排序区）",
         "  Tab                  左右栏切换",
         "  /                    进入搜索（再按 Esc 退出搜索）",
         "  鼠标单击             选择分类或书签 / 点搜索框进入搜索",
@@ -532,6 +533,7 @@ mod tests {
                 created_at: test_now(),
                 last_visited_at: None,
                 visit_count: 0,
+                sort_key: None,
             }],
         }
     }

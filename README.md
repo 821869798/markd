@@ -164,6 +164,7 @@ mkd          # open the TUI
 | Action | Key / Mouse |
 | --- | --- |
 | Move | `j` / `k` or arrows |
+| Reorder bookmark (manual ordering) | `Alt+↑` / `Alt+↓` |
 | Switch panes | `Tab`, or click a pane |
 | Fuzzy search | `/`, or click the search bar |
 | Jump to directory | `Enter`, or double-click |
